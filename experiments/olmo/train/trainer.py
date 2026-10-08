@@ -1998,6 +1998,10 @@ class Trainer:
         }
         if hasattr(self.cfg.optimizer, "action_expert_learning_rate"):
             initial_lr_dict["action_expert"] = self.cfg.optimizer.action_expert_learning_rate
+        if self.cfg.optimizer.tactile_backbone_learning_rate is not None:
+            initial_lr_dict["vit_tactile"] = self.cfg.optimizer.tactile_backbone_learning_rate
+        if self.cfg.optimizer.tactile_adapter_learning_rate is not None:
+            initial_lr_dict["action_expert_tactile"] = self.cfg.optimizer.tactile_adapter_learning_rate
         for group in self.optim.param_groups:
             group_name = group["group_name"]
             if group_name in initial_lr_dict:
