@@ -459,6 +459,33 @@ def _get_hf_features_from_features_compatible(features: Dict[str, Dict[str, obje
 
 
 class _MolmoLeRobotDataset(LeRobotDataset):
+    def __init__(self, *args, active_image_keys=None, packed_image_root=None, **kwargs):
+        from olmo.data.packed_images import PackedImageReader
+
+        self._active_image_keys = None if not active_image_keys else set(active_image_keys)
+        packed_image_root = packed_image_root or os.environ.get("LEROBOT_PACKED_IMAGE_ROOT")
+        self._packed_images = PackedImageReader(packed_image_root) if packed_image_root else None
+        super().__init__(*args, **kwargs)
+
+    def _check_cached_episodes_sufficient(self):
+        if self._packed_images is not None:
+            # Metadata/data are already local; video files live in the checked JPEG cache.
+            expected = self.meta.total_frames if self.episodes is None else sum(
+                int(self.meta.episodes[int(ep)]["dataset_to_index"]) - int(self.meta.episodes[int(ep)]["dataset_from_index"])
+                for ep in self.episodes
+            )
+            if self.hf_dataset is None or len(self.hf_dataset) != expected:
+                raise ValueError("Packed training requires a complete matching frame table.")
+            return True
+        return super()._check_cached_episodes_sufficient()
+
+    def _query_videos(self, query_timestamps, ep_idx):
+        if self._active_image_keys is not None:
+            query_timestamps = {key: value for key, value in query_timestamps.items() if key in self._active_image_keys}
+        if self._packed_images is not None:
+            return self._packed_images.query(self.meta, query_timestamps, ep_idx)
+        return super()._query_videos(query_timestamps, ep_idx)
+
     def load_hf_dataset(self):
         # LeRobot datasets may declare metadata-only modalities like audio that are
         # not materialized in the parquet frame table and are unused by MolmoAct2.
@@ -3134,6 +3161,11 @@ def build_lerobot_dataset(
             delta_timestamps=delta_timestamps,
             video_backend=video_backend,
             tolerance_s=tolerance_s,
+            active_image_keys=list(dict.fromkeys([
+                *(tag_metadata.get("camera_keys") or []),
+                *(tag_metadata.get("camera_keys_alternative") or []),
+                *tactile_keys_from_metadata(tag_metadata),
+            ])),
         )
         try:
             return _MolmoLeRobotDataset(**dataset_kwargs)
@@ -3282,6 +3314,11 @@ def build_lerobot_dataset(
             "episodes": parsed.episodes,
             "download_videos": download_videos,
             "delta_timestamps": delta_timestamps,
+            "active_image_keys": list(dict.fromkeys([
+                *(tag_metadata.get("camera_keys") or []),
+                *(tag_metadata.get("camera_keys_alternative") or []),
+                *tactile_keys_from_metadata(tag_metadata),
+            ])),
             "video_backend": video_backend,
             "tolerance_s": tolerance_s,
             "revision": getattr(dataset, "revision", None),

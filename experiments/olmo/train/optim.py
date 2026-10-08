@@ -64,6 +64,8 @@ class OptimizerConfig(BaseConfig):
     frame_selector_learning_rate: Optional[float] = 1.0e-4
     temporal_token_scorer_learning_rate: Optional[float] = 1.0e-4
     action_expert_learning_rate: Optional[float] = 1.0e-4
+    tactile_backbone_learning_rate: Optional[float] = None
+    tactile_adapter_learning_rate: Optional[float] = None
     """
     Separate learning_rate values for the connector, vision backbone, and llm transformer.
     """
@@ -165,6 +167,20 @@ class OptimizerConfig(BaseConfig):
                 "eps": self.action_expert_eps,
             },
         ]
+
+        tactile = getattr(model, "tactile_encoder", None)
+        if tactile is not None and (self.tactile_backbone_learning_rate is not None or self.tactile_adapter_learning_rate is not None):
+            backbone_params = {p for p in tactile.backbone.parameters() if p.requires_grad}
+            adapter_params = {p for p in tactile.parameters() if p.requires_grad} - backbone_params
+            group_configs[-1]["params"] = [p for p in group_configs[-1]["params"] if p not in backbone_params | adapter_params]
+            for name, params, lr, decay, betas, eps in (
+                ("vit_tactile", backbone_params, self.tactile_backbone_learning_rate or self.action_expert_learning_rate,
+                 self.vit_weight_decay, self.vit_betas, self.vit_eps),
+                ("action_expert_tactile", adapter_params, self.tactile_adapter_learning_rate or self.action_expert_learning_rate,
+                 self.action_expert_weight_decay, self.action_expert_betas, self.action_expert_eps),
+            ):
+                group_configs.append({"group_name": name, "params": list(params), "lr": lr,
+                                      "weight_decay": decay, "betas": betas, "eps": eps})
 
         # Sanity check to make sure the `get_parameters` functions are doing the right thing
         param_names = {p: np for np, p in model.named_parameters() if p.requires_grad}
@@ -585,5 +601,4 @@ class SchedulerConfig(BaseConfig):
             temporal_token_scorer_scheduler=temporal_token_scorer_scheduler,
             action_expert_scheduler=action_expert_scheduler,
         )
-
 

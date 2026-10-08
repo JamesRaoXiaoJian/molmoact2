@@ -20,7 +20,7 @@ from olmo.preprocessing.tactile_preprocessor import (
     preprocess_tactile,
 )
 from olmo.train.checkpoint_loading import initialize_tactile_state_for_checkpoint
-from olmo.train.optim import OptimizerConfig, OptimizerType
+from olmo.train.optim import OptimizerConfig, OptimizerType, SchedulerConfig
 
 BACKENDS = ("anytouch2", "sparsh_vjepa", "tactile_mae")
 
@@ -250,3 +250,36 @@ def test_initial_base_checkpoint_materializes_tactile_from_cpu_weights_for_meta_
         torch.testing.assert_close(
             target.tactile_encoder.backbone.state_dict()[key], expected
         )
+
+
+def test_tactile_backbone_and_adapter_get_distinct_native_learning_rates(monkeypatch):
+    model = MolmoAct2(_tiny_config(monkeypatch, "tactile_mae"), device="cpu")
+    model.reset_parameters()
+    config = OptimizerConfig(
+        tactile_backbone_learning_rate=5e-6, tactile_adapter_learning_rate=5e-5
+    )
+    groups = config.get_param_groups(None, None, model)
+    backbone = [
+        group for group in groups if group["group_name"].startswith("vit_tactile")
+    ]
+    adapter = [
+        group
+        for group in groups
+        if group["group_name"].startswith("action_expert_tactile")
+    ]
+    assert backbone and adapter
+    assert all(group["lr"] == 5e-6 for group in backbone)
+    assert all(group["lr"] == 5e-5 for group in adapter)
+    assert any(
+        model.tactile_encoder.projection.weight is p
+        for group in adapter
+        for p in group["params"]
+    )
+    assert any(
+        model.tactile_encoder.backbone.video_patch_embedding.weight is p
+        for group in backbone
+        for p in group["params"]
+    )
+    scheduler = SchedulerConfig().build()
+    assert scheduler.get_lr(5e-6, 1000, 20000, "vit_tactile") > 0
+    assert scheduler.get_lr(5e-5, 1000, 20000, "action_expert_tactile") > 0

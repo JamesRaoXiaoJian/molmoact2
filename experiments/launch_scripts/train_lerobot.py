@@ -214,6 +214,8 @@ def main():
     parser.add_argument("--vit_learning_rate", default=5e-6, type=float)
     parser.add_argument("--llm_learning_rate", default=1e-5, type=float)
     parser.add_argument("--action_expert_learning_rate", default=1e-4, type=float)
+    parser.add_argument("--tactile_backbone_learning_rate", default=None, type=float)
+    parser.add_argument("--tactile_adapter_learning_rate", default=None, type=float)
     parser.add_argument(
         "--max_action_dim",
         default=None,
@@ -871,6 +873,8 @@ def main():
             vit_learning_rate=args.vit_learning_rate,
             llm_learning_rate=args.llm_learning_rate,
             action_expert_learning_rate=args.action_expert_learning_rate,
+            tactile_backbone_learning_rate=args.tactile_backbone_learning_rate,
+            tactile_adapter_learning_rate=args.tactile_adapter_learning_rate,
             connector_weight_decay=0.0,
             vit_weight_decay=0.0,
             llm_weight_decay=0.0,
