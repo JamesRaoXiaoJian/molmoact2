@@ -179,7 +179,6 @@ def main():
     workspace.settings = ws.WorkspaceSettings(x_axis="Step", sort_panels_alphabetically=False, max_runs=2)
     workspace.runset_settings = ws.RunsetSettings(
         query="-fft20k-b64-s42-20261008",
-        filters="State != 'crashed' and State != 'failed'",
         run_settings={r.id: ws.RunSettings(color="#E69F00" if "-mae-" in r.name else "#0072B2") for r in runs},
         pinned_columns=["summary:train/action_flow_loss", "summary:_step", "run:state"],
     )
