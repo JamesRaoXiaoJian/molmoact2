@@ -50,7 +50,10 @@
 
 共享准备目录：`outputs/dlc/x5_cleaned_ablation_20261008/`。
 日志和模型目录：`outputs/runs/molmoact2-x5-cleaned-{rgb,mae}-fft20k-b64-s42-20261008/`。
-源码在提交前冻结到共享准备目录的 `code/`，两组使用相同版本。
+源码在提交前冻结到共享准备目录的 `code/`。
+MAE 启动兼容修复单独冻结到 `code-mae-workerfix/`，修复 worker 序列化、CUDA 库路径
+和触觉参数组学习率调度；RGB 正式训练继续使用已启动的冻结版本，未为这些修复重启。
+实际 JobId、代码版本和替代作业记录保存在 `active_jobs.json`。
 
 ```bash
 python3 /root/.codex/skills/dlc/scripts/submit.py \
@@ -94,5 +97,7 @@ source /root/RXJ/dlc_shared/wandb_env.sh /root/RXJ/molmoact2/outputs/dlc/x5_clea
   --update-personal
 ```
 
-`--update-personal` 同时整理当前 API 账号的默认 workspace，并在末尾保留折叠的原始诊断分组。
+`--update-personal` 同时整理当前 API 账号的默认 workspace。
+两个 workspace 均关闭自动追加与字母排序，只保留实际有记录的必要指标白名单；
+原始布局保存在操作前备份中，可用于恢复。
 saved view 的直达链接和数据核验结果保存在 `observability/workspace_verified.json`。

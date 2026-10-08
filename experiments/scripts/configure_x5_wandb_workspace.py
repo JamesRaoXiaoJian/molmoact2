@@ -135,6 +135,14 @@ def make_sections(keys, runs, gpu_keys):
     return sections
 
 
+def panel_signature(panel):
+    metrics = getattr(panel, "y", [])
+    if hasattr(panel, "metric"):
+        metrics = [panel.metric]
+    return (type(panel).__name__, getattr(panel, "title", None),
+            [getattr(metric, "name", metric) for metric in metrics])
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--entity", required=True)
@@ -176,6 +184,9 @@ def main():
         entity=args.entity, project=args.project, name=VIEW_NAME, auto_generate_panels=False
     )
     workspace.sections = make_sections(keys, runs, gpu_keys)
+    # The SDK exposes this as a read-only creation option. Its wire model also
+    # supports persisted updates; set the stored flag and verify after saving.
+    workspace._auto_generate_panels = False
     workspace.settings = ws.WorkspaceSettings(x_axis="Step", sort_panels_alphabetically=False, max_runs=2)
     workspace.runset_settings = ws.RunsetSettings(
         query="-fft20k-b64-s42-20261008",
@@ -188,13 +199,10 @@ def main():
         for node in nodes:
             if node["name"].endswith("-w") and api.viewer.username in node["name"]:
                 personal = load_view(node, args.entity, args.project)
-                # Preserve existing diagnostic groups, collapsed after curated sections.
-                managed_names = {s.name for s in workspace.sections}
-                diagnostics = [s for s in personal.sections if s.name not in managed_names]
-                for section in diagnostics:
-                    section.is_open = False
-                    section.pinned = False
-                personal.sections = [*workspace.sections, *diagnostics]
+                # The complete prior layout is backed up. Keep only curated
+                # panels so dormant auto groups cannot repopulate the page.
+                personal.sections = workspace.sections
+                personal._auto_generate_panels = False
                 personal.settings = workspace.settings
                 personal.runset_settings = workspace.runset_settings
                 personal.save()
@@ -202,9 +210,12 @@ def main():
 
     loaded = ws.Workspace.from_url(workspace.url)
     assert [s.name for s in loaded.sections] == [s.name for s in workspace.sections]
+    for actual, expected in zip(loaded.sections, workspace.sections):
+        assert [panel_signature(p) for p in actual.panels] == [panel_signature(p) for p in expected.panels]
     assert loaded.sections[0].is_open and loaded.sections[0].pinned
     assert loaded.sections[0].panels[0].y[0].name == LOSS
     assert not loaded.settings.sort_panels_alphabetically
+    assert loaded.auto_generate_panels is False
     if personal_name is not None:
         response = execute_graphql(api, VIEWS_QUERY, variables)
         node = next(e["node"] for e in response["project"]["allViews"]["edges"] if e["node"]["name"] == personal_name)
@@ -213,7 +224,13 @@ def main():
         names = [s.name for s in personal.sections]
         assert names[:len(loaded.sections)] == [s.name for s in loaded.sections]
         assert len(names) == len(set(names)), "Repeated dashboard sections"
+        assert personal.auto_generate_panels is False
+        assert not personal.settings.sort_panels_alphabetically
+        for actual, expected in zip(personal.sections, loaded.sections):
+            assert [panel_signature(p) for p in actual.panels] == [panel_signature(p) for p in expected.panels]
     result = {"workspace_url": workspace.url, "verified_at": stamp, "runs": evidence,
+              "auto_generate_panels": loaded.auto_generate_panels,
+              "sort_panels_alphabetically": loaded.settings.sort_panels_alphabetically,
               "sections": [{"name": s.name, "titles": [getattr(p, "title", None) for p in s.panels]} for s in loaded.sections]}
     (args.record_dir / "workspace_verified.json").write_text(json.dumps(result, indent=2, ensure_ascii=False) + "\n")
     print(json.dumps(result, indent=2, ensure_ascii=False))
