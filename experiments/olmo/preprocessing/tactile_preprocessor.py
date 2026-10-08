@@ -46,7 +46,11 @@ class TactileExamplePreprocessor:
         self.base, self.config, self.n_obs_steps = base, config, n_obs_steps
 
     def __getattr__(self, name):
-        return getattr(self.base, name)
+        # Unpickling probes special methods before restoring instance state.
+        base = self.__dict__.get("base")
+        if base is None:
+            raise AttributeError(name)
+        return getattr(base, name)
 
     @property
     def prefix_length(self):

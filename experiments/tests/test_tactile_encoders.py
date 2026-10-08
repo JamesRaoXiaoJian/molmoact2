@@ -1,3 +1,4 @@
+import pickle
 from types import SimpleNamespace
 
 import numpy as np
@@ -283,3 +284,14 @@ def test_tactile_backbone_and_adapter_get_distinct_native_learning_rates(monkeyp
     scheduler = SchedulerConfig().build()
     assert scheduler.get_lr(5e-6, 1000, 20000, "vit_tactile") > 0
     assert scheduler.get_lr(5e-5, 1000, 20000, "action_expert_tactile") > 0
+
+
+def test_tactile_preprocessor_can_be_restored_by_spawn_workers():
+    original = TactileExamplePreprocessor(
+        SimpleNamespace(tokenizer="tokenizer-probe"),
+        TactileConfig(backend="tactile_mae"),
+        1,
+    )
+    restored = pickle.loads(pickle.dumps(original))
+    assert restored.tokenizer == "tokenizer-probe"
+    assert restored.prefix_length == 64
