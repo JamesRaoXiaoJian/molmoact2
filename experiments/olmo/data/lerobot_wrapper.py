@@ -55,6 +55,8 @@ from PIL import Image
 from transformers import AutoProcessor, PreTrainedTokenizerFast
 
 from olmo.util import get_hf_access_token
+from olmo.data.tactile import TACTILE_IMAGE_KEYS, normalize_tactile_keys, observation_image_keys, tactile_keys_from_metadata
+from olmo.nn.tactile_config import TactileConfig
 
 _LEROBOT_SRC = Path(__file__).resolve().parents[2] / "lerobot" / "src"
 if _LEROBOT_SRC.is_dir() and str(_LEROBOT_SRC) not in sys.path:
@@ -699,7 +701,13 @@ def _require_non_empty_int_sequence(values: Sequence[int], *, label: str) -> Lis
         raise ValueError(f"{label} must be a non-empty sequence of integers.")
     normalized: List[int] = []
     for value in values:
-        normalized.append(_require_non_negative_int(value, label=label))
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            raise ValueError(f"{label} must contain integers, got {value!r}.") from None
+        if isinstance(value, bool) or parsed != value:
+            raise ValueError(f"{label} must contain integers, got {value!r}.")
+        normalized.append(parsed)
     return normalized
 
 
@@ -997,6 +1005,7 @@ def _require_tag_metadata_entry(
             f"LeRobot tag metadata for tag '{tag}' has n_action_steps={int(metadata['n_action_steps'])}, "
             f"which exceeds action_horizon={int(metadata['action_horizon'])}."
         )
+    observation_image_keys(metadata)
     return metadata
 
 
@@ -1186,10 +1195,11 @@ def _resolve_delta_settings(
     dataset_root: Optional[Path],
     n_obs_steps: int,
     action_horizon: int,
+    tactile_config: TactileConfig | None = None,
 ) -> Tuple[Optional[Dict[str, List[float]]], List[int], List[int]]:
     obs_indices = list(range(1 - n_obs_steps, 1))
     action_indices = list(range(1 - n_obs_steps, 1 - n_obs_steps + action_horizon))
-    require_history = n_obs_steps > 1 or action_horizon > 1
+    require_history = n_obs_steps > 1 or action_horizon > 1 or (tactile_config is not None and tactile_config.frames > 1)
     delta_timestamps: Optional[Dict[str, List[float]]] = None
 
     if require_history:
@@ -1215,6 +1225,10 @@ def _resolve_delta_settings(
                 timestamps[key] = [idx / fps for idx in obs_indices]
             if action_horizon > 1 and (key == "action" or key.startswith("action.")):
                 timestamps[key] = [idx / fps for idx in action_indices]
+        if tactile_config is not None and tactile_config.independent:
+            offsets = sorted({s - h * tactile_config.history_stride for s in obs_indices for h in range(tactile_config.frames)})
+            for key in tactile_config.keys:
+                timestamps[key] = [idx / fps for idx in offsets]
         if timestamps:
             delta_timestamps = timestamps
 
@@ -1364,6 +1378,8 @@ class LeRobotDatasetWrapper(Dataset):
         depth_dataset: Optional[LeRobotDataset] = None,
         depth_dataset_reopen_kwargs: Optional[Dict[str, Any]] = None,
         depth_dataset_reopen_kwargs_by_camera: Optional[Dict[str, Dict[str, Any]]] = None,
+        tactile_keys: Sequence[str] | None = None,
+        tactile_config: TactileConfig | None = None,
     ):
         super().__init__()
         self.dataset = dataset
@@ -1397,6 +1413,14 @@ class LeRobotDatasetWrapper(Dataset):
             camera_keys_alternative,
             label="camera_keys_alternative",
         )
+        self.tactile_keys = normalize_tactile_keys(tactile_keys)
+        self.tactile_config = tactile_config
+        if tactile_config is not None and self.tactile_keys != tactile_config.keys:
+            raise ValueError("Tactile model and dataset sensor layout/order must match.")
+        if self.tactile_keys and any(
+            key in TACTILE_IMAGE_KEYS for key in [*(self.camera_keys or []), *(self.camera_keys_alternative or [])]
+        ):
+            raise ValueError("Configure DM sensors in tactile_keys, separate from RGB camera_keys.")
         if self.camera_keys_alternative and not self.camera_keys:
             raise ValueError("camera_keys_alternative requires camera_keys to also be provided.")
         if self.random_camera_order == "none" and not self.camera_keys:
@@ -2322,8 +2346,11 @@ class LeRobotDatasetWrapper(Dataset):
                 return list(camera_key_configs[selected_config_idx])
             return list(self.camera_keys)
         if self._meta_camera_keys:
-            return list(self._meta_camera_keys)
-        return sorted(key for key in example if key.startswith("observation.images"))
+            return [key for key in self._meta_camera_keys if not self.tactile_keys or key not in TACTILE_IMAGE_KEYS]
+        return sorted(
+            key for key in example
+            if key.startswith("observation.images") and (not self.tactile_keys or key not in TACTILE_IMAGE_KEYS)
+        )
 
     def _episode_camera_permutation(
         self,
@@ -2656,7 +2683,32 @@ class LeRobotDatasetWrapper(Dataset):
         else:
             mapped_index = resolved_mapped_index
         camera_keys_used, camera_permutation = self._resolve_camera_order(frame, rng, mapped_index)
-        image = self._extract_image(frame, camera_keys_used)
+        image_keys_used = [*camera_keys_used, *self.tactile_keys]
+        independent = self.tactile_config is not None and self.tactile_config.independent
+        rgb_keys_used = camera_keys_used if independent else image_keys_used
+        image = self._extract_image(frame, rgb_keys_used)
+        tactile_windows = None
+        if independent:
+            cfg = self.tactile_config
+            offsets = sorted({s - h * cfg.history_stride for s in self.observation_delta_indices for h in range(cfg.frames)})
+            by_key = {key: _collect_image_frames(frame[key]) for key in self.tactile_keys}
+            if any(len(frames) != len(offsets) for frames in by_key.values()):
+                raise ValueError("Independent tactile data must contain the complete historical window.")
+            index_by_offset = {offset: i for i, offset in enumerate(offsets)}
+            tactile_windows = np.stack([
+                np.stack([np.stack([
+                    by_key[key][index_by_offset[s - h * cfg.history_stride]]
+                    for h in reversed(range(cfg.frames))
+                ]) for key in self.tactile_keys])
+                for s in self.observation_delta_indices
+            ])
+        image_augmentation_mask = None
+        if self.tactile_keys:
+            image_augmentation_mask = [
+                key not in self.tactile_keys
+                for key in rgb_keys_used
+                for _ in _collect_image_frames(frame[key])
+            ]
         resize = _parse_image_resize(os.environ.get("LEROBOT_IMAGE_RESIZE"))
         if resize is not None:
             image = _resize_images(image, resize)
@@ -2759,6 +2811,9 @@ class LeRobotDatasetWrapper(Dataset):
         metadata["repo_id"] = repo_id
         metadata["split"] = self.split
         metadata["camera_keys_used"] = list(camera_keys_used)
+        if self.tactile_keys:
+            metadata["tactile_keys_used"] = list(self.tactile_keys)
+            metadata["image_keys_used"] = image_keys_used
         metadata["camera_permutation"] = list(camera_permutation)
         metadata["depth_camera_key_used"] = depth_camera_key_used
         metadata["observation_delta_indices"] = list(self.observation_delta_indices)
@@ -2831,6 +2886,10 @@ class LeRobotDatasetWrapper(Dataset):
             **text_fields,
             "metadata": metadata,
         }
+        if image_augmentation_mask is not None:
+            example_out["image_augmentation_mask"] = image_augmentation_mask
+        if tactile_windows is not None:
+            example_out["tactile_windows"] = tactile_windows
         if self.state_format in {"continuous", "both"}:
             example_out["state"] = state
         if self.action_format in {"continuous", "both"} and emit_action:
@@ -3051,11 +3110,19 @@ def build_lerobot_dataset(
             f"which exceeds configured max_action_horizon={max_action_horizon}."
         )
 
+    tactile_config = None
+    if tag_metadata.get("tactile_keys"):
+        tactile_config = TactileConfig(
+            backend=str(tag_metadata.get("tactile_backend", "as_image")),
+            layout=str(tag_metadata.get("tactile_layout", "two")),
+            history_stride=int(tag_metadata.get("tactile_history_stride", 2)),
+        )
     delta_timestamps, obs_indices, action_indices = _resolve_delta_settings(
         parsed.repo_id,
         dataset_root,
         n_obs_steps,
         tag_action_horizon,
+        tactile_config=tactile_config,
     )
 
     def _build_dataset() -> LeRobotDataset:
@@ -3162,6 +3229,10 @@ def build_lerobot_dataset(
         label="action_keys",
     )
     available_cameras = list(getattr(dataset.meta, "camera_keys", []) or [])
+    tactile_keys = tactile_keys_from_metadata(tag_metadata)
+    _validate_available_camera_keys(
+        available_cameras, tactile_keys, repo_id=parsed.repo_id, label="tag metadata tactile_keys",
+    )
     camera_keys = _resolve_repo_camera_keys(
         tag,
         available_cameras=available_cameras,
@@ -3217,6 +3288,8 @@ def build_lerobot_dataset(
         },
         camera_keys=camera_keys,
         camera_keys_alternative=camera_keys_alternative,
+        tactile_keys=tactile_keys,
+        tactile_config=tactile_config,
         question_key=question_key,
         state_keys=state_keys,
         action_keys=action_keys,

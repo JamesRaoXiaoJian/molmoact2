@@ -668,6 +668,23 @@ def resize_or_init_action_expert_dim_for_checkpoint(
             )
 
 
+def initialize_tactile_state_for_checkpoint(state_dict, model):
+    """Fill a base checkpoint with strict pretrained backbone + new adapter state.
+
+    A complete tactile checkpoint never reads external weights. A partial tactile
+    checkpoint is left to strict model loading, which rejects missing tensors.
+    """
+    encoder = getattr(model, "tactile_encoder", None)
+    if encoder is None or any(key.startswith("tactile_encoder.") for key in state_dict):
+        return
+    from olmo.nn.tactile_encoder import TactileEncoder
+    with torch.device("cpu"):
+        initial = TactileEncoder(encoder.config, encoder.projection.out_features)
+    report = initial.initialize_pretrained()
+    state_dict.update({f"tactile_encoder.{key}": value for key, value in initial.state_dict().items()})
+    log.info("Initialized pretrained tactile encoder: %s", report)
+
+
 def load_unsharded_checkpoint_allowing_missing_action_expert(path: str, model: torch.nn.Module) -> bool:
     """
     Load an unsharded checkpoint into ``model`` while allowing the checkpoint to omit
@@ -765,6 +782,7 @@ def load_unsharded_checkpoint_allowing_missing_action_expert(path: str, model: t
                         )
 
             allow_missing_prefixes = tuple(
+                # Initial tactile parameters are materialized on CPU and broadcast with the base.
                 prefix
                 for prefix, allow in (
                     ("action_expert.", model_has_action_expert and not has_action_expert),
@@ -776,6 +794,7 @@ def load_unsharded_checkpoint_allowing_missing_action_expert(path: str, model: t
                 if allow
             )
             strict_restore = len(allow_missing_prefixes) == 0
+            initialize_tactile_state_for_checkpoint(filtered_state, model)
 
             preprocess_start = time.perf_counter()
             resize_or_init_base_embedding_for_checkpoint(

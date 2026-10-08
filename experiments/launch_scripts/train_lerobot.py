@@ -49,6 +49,8 @@ from launch_scripts.lerobot_utils.stats import (
 from olmo.data.data_loader import DataLoaderConfig
 from olmo.data.dynamic_packer import PackingConfig
 from olmo.data.robot_processing import RobotProcessorConfig
+from olmo.data.tactile import ensure_tactile_image_capacity
+from olmo.nn.tactile_config import TactileConfig, BACKENDS, DEFAULT_ENCODER_PATHS
 from olmo.extra_tokens import (
     ACTION_TOKENS,
     DEFAULT_NUM_DEPTH_TOKENS,
@@ -238,6 +240,12 @@ def main():
         ),
     )
     parser.add_argument("--n_obs_steps", default=1, type=int)
+    parser.add_argument("--tactile_backend", choices=BACKENDS, default="as_image")
+    parser.add_argument("--tactile_num_tokens", type=int, default=32)
+    parser.add_argument("--tactile_history_stride", type=int, default=2)
+    parser.add_argument("--tactile_sensor_id", type=int, default=-1)
+    parser.add_argument("--tactile_encoder_path", default=None)
+    parser.add_argument("--freeze_tactile_encoder", type=_parse_bool_arg, default=False)
     parser.add_argument("--num_flow_timesteps", default=1, type=int)
     parser.add_argument("--flow_matching_beta_alpha", default=1.0, type=float)
     parser.add_argument("--flow_matching_beta_beta", default=1.5, type=float)
@@ -454,6 +462,24 @@ def main():
         style_robot_depth=float(args.style_robot_depth),
         style_robot_depth_action=float(args.style_robot_depth_action),
     )
+    tactile_metadata = [m for m in TAG_METADATA_BY_TAG.values() if m.get("tactile_keys")]
+    tactile_config = None
+    if tactile_metadata:
+        layouts = {m.get("tactile_layout", "two") for m in tactile_metadata}
+        if len(layouts) != 1:
+            raise ValueError("A tactile training run requires a single sensor layout.")
+        tactile_config = TactileConfig(
+            backend=args.tactile_backend, layout=next(iter(layouts)), num_tokens=args.tactile_num_tokens,
+            history_stride=args.tactile_history_stride, sensor_id=args.tactile_sensor_id,
+            freeze_encoder=args.freeze_tactile_encoder,
+            encoder_path=args.tactile_encoder_path or DEFAULT_ENCODER_PATHS.get(args.tactile_backend),
+        )
+        if tactile_config.independent and (args.packing or args.separate_vlm_dataloader):
+            raise ValueError("Independent tactile prefixes require unpacked robot-only batches.")
+        for metadata in tactile_metadata:
+            metadata.update(tactile_backend=tactile_config.backend, tactile_history_stride=tactile_config.history_stride)
+    elif args.tactile_backend != "as_image":
+        raise ValueError("Independent tactile encoders require an x5_tactile mixture.")
     inferred_max_action_horizon = infer_max_action_horizon_from_lerobot_metadata(
         training_data_plan.robot_mixture,
         tag_metadata_by_tag=TAG_METADATA_BY_TAG,
@@ -540,6 +566,7 @@ def main():
     if hasattr(model_cfg, "n_action_steps"):
         model_cfg.n_action_steps = None
     model_cfg.n_obs_steps = args.n_obs_steps
+    model_cfg.tactile = tactile_config
     if args.num_flow_timesteps is not None:
         if args.num_flow_timesteps < 1:
             raise ValueError("--num_flow_timesteps must be >= 1")
@@ -899,6 +926,7 @@ def main():
     conf.merge_with_dotlist([clean_opt(arg) for arg in other_args])
     conf = OmegaConf.to_object(conf)
     conf = _sync_vlm_data_cfg_with_primary(conf)
+    ensure_tactile_image_capacity(conf.model, lerobot_tag_metadata_by_tag)
     run_trainer(conf)
 
 

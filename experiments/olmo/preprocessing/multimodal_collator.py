@@ -165,7 +165,7 @@ class MMCollator:
                     pad = None
                 else:
                     pad = self.pad
-                pad_value = 0 if spec.dtype == np.uint8 else -1
+                pad_value = 0 if spec.dtype == np.uint8 or key == "tactile_token_mask" else -1
                 out[key] = _collate([ex.get(key) for ex in batch], spec.shape,
                                         dtype=spec.dtype, pad=pad, pad_value=pad_value, allow_truncate=False)
 

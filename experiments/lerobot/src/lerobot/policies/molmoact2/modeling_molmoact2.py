@@ -21,6 +21,7 @@ from transformers import PreTrainedTokenizerFast
 from lerobot.policies.molmoact2.configuration_molmoact2 import MolmoAct2Config
 from lerobot.policies.molmoact2.hf_backend import MolmoAct2HFBackend
 from lerobot.policies.pretrained import PreTrainedPolicy
+from olmo.data.tactile import observation_image_keys, tactile_keys_from_metadata
 from olmo.extra_tokens import (
     ACTION_TOKENS,
     DEPTH_END_TOKEN,
@@ -349,6 +350,8 @@ def _build_action_model_inputs(batch: Dict[str, Any]) -> Dict[str, Any]:
         "token_pooling": batch.get("token_pooling"),
         "low_res_token_pooling": batch.get("low_res_token_pooling"),
         "states": batch.get("states"),
+        "tactile_images": batch.get("tactile_images"),
+        "tactile_token_mask": batch.get("tactile_token_mask"),
     }
     return {key: value for key, value in model_inputs.items() if value is not None}
 
@@ -356,6 +359,8 @@ def _build_action_model_inputs(batch: Dict[str, Any]) -> Dict[str, Any]:
 def _build_generation_batch(batch: Dict[str, Any]) -> Dict[str, Any]:
     generation_batch = {
         "input_ids": batch["input_ids"],
+        "tactile_images": batch.get("tactile_images"),
+        "tactile_token_mask": batch.get("tactile_token_mask"),
         "attention_mask": batch.get("attention_mask"),
         "images": batch.get("images"),
         "image_masks": batch.get("image_masks"),
@@ -938,9 +943,12 @@ class MolmoAct2Policy(PreTrainedPolicy):
             raise RuntimeError("MolmoAct2 handles not initialized.")
 
         images: List[np.ndarray] = []
+        image_keys: list[str] = []
         for key, value in obs.items():
             if key.startswith("observation.images"):
+                before = len(images)
                 _append_images(images, value)
+                image_keys.extend([key] * (len(images) - before))
         if not images:
             if "images" in obs:
                 _append_images(images, obs["images"])
@@ -985,6 +993,7 @@ class MolmoAct2Policy(PreTrainedPolicy):
 
         return {
             "image": images if len(images) > 1 else images[0],
+            "image_keys": image_keys,
             "state": state,
             "prompt": str(prompt or ""),
             "task": str(prompt or ""),
@@ -1048,7 +1057,42 @@ class MolmoAct2Policy(PreTrainedPolicy):
             if handles.robot_processor is not None
             else {}
         )
-        return _build_example(
+        tactile_keys = tactile_keys_from_metadata(robot_metadata)
+        independent = robot_metadata.get("tactile_backend", "as_image") != "as_image"
+        tactile_windows = []
+        image_augmentation_mask = None
+        if tactile_keys:
+            # Training flattens camera/sensor first, then oldest-to-current time.
+            # Keyed observations avoid depending on dictionary insertion order.
+            required_keys = observation_image_keys(robot_metadata)
+            images_by_key = {key: [] for key in required_keys}
+            for example in examples:
+                obs_images = example["image"]
+                if not isinstance(obs_images, list):
+                    obs_images = [obs_images]
+                keys = example.get("image_keys") or []
+                if len(keys) != len(obs_images):
+                    raise ValueError("Tactile checkpoints require named observation.images.* inputs.")
+                missing = set(required_keys) - set(keys)
+                if missing:
+                    raise ValueError(f"Missing required RGB/tactile observations: {sorted(missing)}")
+                if independent:
+                    frames = 4 if robot_metadata["tactile_backend"] in ("anytouch2", "sparsh_vjepa") else 1
+                    window = []
+                    for key in tactile_keys:
+                        sensor_images = [image for name, image in zip(keys, obs_images, strict=True) if name == key]
+                        if len(sensor_images) != frames:
+                            raise ValueError(f"{key} requires {frames} real historical frames.")
+                        window.append(np.stack(sensor_images))
+                    tactile_windows.append(np.stack(window))
+                for key, image in zip(keys, obs_images, strict=True):
+                    if key in images_by_key and (not independent or key not in tactile_keys):
+                        images_by_key[key].append(image)
+            images = [image for key in required_keys for image in images_by_key[key]]
+            image_augmentation_mask = [
+                key not in tactile_keys for key in required_keys for _ in images_by_key[key]
+            ]
+        combined = _build_example(
             images,
             prompt,
             normalized_state,
@@ -1061,6 +1105,11 @@ class MolmoAct2Policy(PreTrainedPolicy):
             add_setup_tokens=handles.add_setup_tokens,
             add_control_tokens=handles.add_control_tokens,
         )
+        if image_augmentation_mask is not None:
+            combined["image_augmentation_mask"] = image_augmentation_mask
+        if independent:
+            combined["tactile_windows"] = np.stack(tactile_windows)
+        return combined
 
     def _collate_example(self, example: Dict[str, Any], handles: _MolmoHandles) -> Dict[str, Any]:
         proc = handles.preprocessor(example)

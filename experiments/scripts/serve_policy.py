@@ -43,6 +43,9 @@ from lerobot.policies.molmoact2.configuration_molmoact2 import (  # noqa: E402
     MolmoAct2Config,
 )
 from lerobot.policies.molmoact2.modeling_molmoact2 import MolmoAct2Policy  # noqa: E402
+from olmo.data.tactile import (
+    X5_RGB_IMAGE_KEYS, observation_image_keys, tactile_keys_for_layout, tactile_keys_from_metadata,
+)
 
 json_numpy.patch()
 
@@ -61,6 +64,15 @@ IMAGE_KEY_PRESETS = {
     "xarm": [
         "zed_gripper_left",
         "zed_high_left_left"
+    ],
+    "x5": [key.removeprefix("observation.images.") for key in X5_RGB_IMAGE_KEYS],
+    "x5_tactile": [
+        key.removeprefix("observation.images.")
+        for key in (*X5_RGB_IMAGE_KEYS, *tactile_keys_for_layout("two"))
+    ],
+    "x5_tactile_four": [
+        key.removeprefix("observation.images.")
+        for key in (*X5_RGB_IMAGE_KEYS, *tactile_keys_for_layout("four"))
     ],
 }
 
@@ -235,7 +247,8 @@ def _build_observations(
             "observation.state": np.asarray(state[obs_idx], dtype=np.float32),
         }
         for image_name, image in zip(image_names, images):
-            obs[f"observation.images.{image_name}"] = np.asarray(image)
+            image_key = image_name if image_name.startswith("observation.images.") else f"observation.images.{image_name}"
+            obs[image_key] = np.asarray(image)
         observations.append(obs)
     return observations
 
@@ -393,7 +406,23 @@ class MolmoAct2Server:
 
         images_payload = payload.get("images")
         image_names: List[str] = []
-        if images_payload is None:
+        tactile_keys = tactile_keys_from_metadata(robot_metadata)
+        if tactile_keys:
+            image_names = observation_image_keys(robot_metadata)
+            if images_payload is None or isinstance(images_payload, dict):
+                source = payload if images_payload is None else images_payload
+                ordered = []
+                for key in image_names:
+                    value = source.get(key)
+                    if value is None:
+                        value = source.get(key.removeprefix("observation.images."))
+                    if value is None:
+                        raise ValueError(f"Missing required RGB/tactile image {key!r}.")
+                    ordered.append(value)
+                images_payload = ordered
+            elif not isinstance(images_payload, (list, tuple)) or len(images_payload) != len(image_names):
+                raise ValueError(f"Tactile checkpoint expects {len(image_names)} images in checkpoint order.")
+        elif images_payload is None:
             ordered = []
             for key in self.image_keys:
                 value = payload.get(key)
@@ -463,6 +492,7 @@ class MolmoAct2Server:
         )
 
     def health(self) -> Dict[str, Any]:
+        tactile_metadata = self.robot_processor.get_metadata(self.default_norm_tag) if self.robot_processor is not None else {}
         return {
             "status": "ok",
             "device": str(self.device),
@@ -481,6 +511,10 @@ class MolmoAct2Server:
             "save_image_dir": None if self.save_image_dir is None else str(self.save_image_dir),
             "verbose": self.verbose,
             "session_count": len(self._session_states),
+            "tactile_backend": tactile_metadata.get("tactile_backend"),
+            "tactile_keys": tactile_metadata.get("tactile_keys", []),
+            "tactile_history_stride": tactile_metadata.get("tactile_history_stride", 2),
+            "tactile_frames": 4 if tactile_metadata.get("tactile_backend") in ("anytouch2", "sparsh_vjepa") else 1,
         }
 
     def _capture_policy_state(self) -> PolicySessionState:

@@ -278,6 +278,9 @@ class Molmo2(ModelBase):
         action_expert = getattr(self, "action_expert", None)
         if action_expert is not None:
             action_expert.apply_fsdp2(**fully_shard_kwargs)
+        tactile_encoder = getattr(self, "tactile_encoder", None)
+        if tactile_encoder is not None:
+            tactile_encoder.apply_fsdp2(**fully_shard_kwargs)
         fully_shard(self, **fully_shard_kwargs)
 
     def apply_fsdp2_v2(
@@ -324,6 +327,9 @@ class Molmo2(ModelBase):
         action_expert = getattr(self, "action_expert", None)
         if action_expert is not None:
             action_expert.apply_fsdp2(**fsdp_config)
+        tactile_encoder = getattr(self, "tactile_encoder", None)
+        if tactile_encoder is not None:
+            tactile_encoder.apply_fsdp2(**fsdp_config)
 
         fully_shard(self, **fsdp_config)
 
@@ -664,6 +670,8 @@ class Molmo2(ModelBase):
         append_last_valid_logits: Optional[torch.Tensor] = None,
         collect_layer_hidden_states: bool = False,
         collect_layer_kv_states: bool = False,
+        additional_token_embeddings: torch.Tensor | None = None,
+        additional_token_mask: torch.Tensor | None = None,
         **kwargs,
     ) -> OLMoOutput:
         """
@@ -820,6 +828,15 @@ class Molmo2(ModelBase):
             x = self.transformer.wte(input_ids)
             if self.transformer.token_bias is not None:
                 x = x + self.transformer.token_bias(input_ids, dtype=x.dtype)
+
+        if additional_token_embeddings is not None:
+            if additional_token_mask is None or additional_token_mask.shape != input_ids.shape:
+                raise ValueError("Additional token embeddings require a matching sequence mask.")
+            mask = additional_token_mask.bool()
+            if not torch.all(mask.sum(1) == additional_token_embeddings.shape[1]):
+                raise ValueError("Tactile prefix mask/token count mismatch.")
+            x = x.clone()
+            x[mask] = additional_token_embeddings.reshape(-1, x.shape[-1]).to(dtype=x.dtype)
 
         # Convert mask to a float mask, and possibly combine with `attention_bias`
         if attention_bias is not None:
@@ -1060,6 +1077,8 @@ class Molmo2(ModelBase):
             multimodal_type=batch.get("multimodal_type"),
             num_image_starts=batch.get("num_image_starts"),
         )
+        if getattr(self, "tactile_encoder", None) is not None:
+            image_args.update(tactile_images=batch.get("tactile_images"), tactile_token_mask=batch.get("tactile_token_mask"))
 
         llm_cfg = self.config.llm
 

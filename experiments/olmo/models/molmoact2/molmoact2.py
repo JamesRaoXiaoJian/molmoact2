@@ -15,6 +15,9 @@ from typing import (
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from olmo.nn.tactile_config import TactileConfig
+from olmo.nn.tactile_encoder import TactileEncoder
+from olmo.preprocessing.tactile_preprocessor import TactileExamplePreprocessor
 from torch.distributions import Beta
 
 from olmo import tokenizer as tok
@@ -80,6 +83,7 @@ class MolmoAct2Config(Molmo2Config):
 
     n_obs_steps: int = 1
     """Number of observation steps provided to the policy."""
+    tactile: TactileConfig | None = None
 
     action_expert: ActionExpertConfig = field(default_factory=ActionExpertConfig)
     """Configuration for the diffusion-style action head."""
@@ -184,6 +188,12 @@ class MolmoAct2Config(Molmo2Config):
     def build_model(self, device=None):
         return MolmoAct2(self, device)
 
+    def build_preprocessor(self, *args, **kwargs):
+        base = super().build_preprocessor(*args, **kwargs)
+        if self.tactile is not None and self.tactile.independent:
+            return TactileExamplePreprocessor(base, self.tactile, self.n_obs_steps)
+        return base
+
     def build_collator(self, output_shapes, pad_mode: str, include_metadata=True) -> MMCollator:
         return MMCollator(
             get_special_token_ids(self.build_tokenizer()),
@@ -200,6 +210,10 @@ class MolmoAct2(Molmo2):
 
     def __init__(self, config: MolmoAct2Config, device=None):
         super().__init__(config, device)
+        self.tactile_encoder = (
+            TactileEncoder(config.tactile, config.llm.d_model).to(device=device)
+            if config.tactile is not None and config.tactile.independent else None
+        )
         valid_action_formats = {"continuous", "discrete", "both"}
         if config.action_format not in valid_action_formats:
             raise ValueError(
@@ -391,6 +405,8 @@ class MolmoAct2(Molmo2):
         packed_num_chunks: Optional[torch.Tensor] = None,
         packed_action_chunk_cap: Optional[torch.Tensor] = None,
         packed_action_chunk_overflow: Optional[torch.Tensor] = None,
+        tactile_images: torch.Tensor | None = None,
+        tactile_token_mask: torch.Tensor | None = None,
     ) -> OLMoOutput:
         """Run the base VLM and (optionally) compute the action loss."""
         output_hidden_states = output_hidden_states if output_hidden_states is not None else False
@@ -420,6 +436,8 @@ class MolmoAct2(Molmo2):
         collect_layer_kv = actions is not None
         forward_kwargs = dict(
             input_ids=input_ids,
+            tactile_images=tactile_images,
+            tactile_token_mask=tactile_token_mask,
             input_embeddings=input_embeddings,
             attention_mask=attention_mask,
             attention_bias=attention_bias,
@@ -528,6 +546,8 @@ class MolmoAct2(Molmo2):
         generator: Optional[torch.Generator] = None,
         encoder_kv_states: Optional[Sequence[Tuple[torch.Tensor, torch.Tensor]]] = None,
         encoder_attention_mask: Optional[torch.Tensor] = None,
+        tactile_images: torch.Tensor | None = None,
+        tactile_token_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Generate an action trajectory via flow-matching integration."""
         action_expert = self._require_action_expert()
@@ -547,6 +567,8 @@ class MolmoAct2(Molmo2):
             encoder_attention_mask = self._get_encoder_attention_mask(input_ids, attention_mask)
             forward_kwargs = dict(
                 input_ids=input_ids,
+                tactile_images=tactile_images,
+                tactile_token_mask=tactile_token_mask,
                 input_embeddings=input_embeddings,
                 attention_mask=attention_mask,
                 attention_bias=attention_bias,
@@ -658,6 +680,15 @@ class MolmoAct2(Molmo2):
         Optional[Sequence[Tuple[torch.Tensor, torch.Tensor]]],
     ]:
         kwargs = dict(forward_kwargs)
+        tactile_images = kwargs.pop("tactile_images", None)
+        tactile_mask = kwargs.pop("tactile_token_mask", None)
+        if tactile_images is not None:
+            if self.tactile_encoder is None or tactile_mask is None:
+                raise ValueError("Tactile pixels require an independent encoder and token mask.")
+            kwargs["additional_token_embeddings"] = self.tactile_encoder(tactile_images)
+            kwargs["additional_token_mask"] = tactile_mask
+        elif getattr(self, "tactile_encoder", None) is not None and not kwargs.get("past_key_values"):
+            raise ValueError("Independent tactile checkpoints require tactile_images.")
         kwargs["collect_layer_hidden_states"] = collect_layer_hidden_states
         kwargs["collect_layer_kv_states"] = collect_layer_kv_states
         kwargs["output_hidden_states"] = output_hidden_states or collect_layer_input_states
@@ -1346,4 +1377,6 @@ class MolmoAct2(Molmo2):
             params.extend(self.action_expert.parameters())
         if self.action_expert_depth_gate is not None:
             params.extend(self.action_expert_depth_gate.parameters())
+        if self.tactile_encoder is not None:
+            params.extend(self.tactile_encoder.parameters())
         return iter(params)

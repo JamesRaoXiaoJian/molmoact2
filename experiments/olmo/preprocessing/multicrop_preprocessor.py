@@ -296,15 +296,21 @@ class MultiImagePreprocessor:
         images,
         is_training=False,
         rng=None,
-        apply_augmentation: bool = True,
+        apply_augmentation: bool | list[bool] = True,
     ) -> List[TokenizedVisionData]:
+        if isinstance(apply_augmentation, (list, tuple)) and len(apply_augmentation) != len(images):
+            raise ValueError("Image augmentation mask must match the number of images.")
+        if isinstance(apply_augmentation, (list, tuple)) and self.max_images is not None and len(images) > self.max_images:
+            raise ValueError("The image limit would truncate configured tactile observations; increase max_images.")
         tokenized_images = []
         for idx, image in enumerate(images):
             image_data = self.image_preprocessor(
                 image,
                 is_training,
                 rng,
-                apply_augmentation=apply_augmentation,
+                apply_augmentation=(
+                    apply_augmentation[idx] if isinstance(apply_augmentation, (list, tuple)) else apply_augmentation
+                ),
             )
             if len(images) > 1:
                 # Add prefix to the image tokens if there are multiple images

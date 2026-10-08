@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import os
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
+
+from olmo.data.tactile import X5_RGB_IMAGE_KEYS, tactile_keys_for_layout
 
 from launch_scripts.data_constants import (
     SO100_SO101_MOLMOACT2,
@@ -389,6 +392,32 @@ def build_molmoact2_so100_so101() -> Tuple[List[RawMixtureEntry], Dict[str, Dict
     )
 
 
+def build_molmoact2_x5(tactile_layout: str | None = None) -> tuple[list[RawMixtureEntry], dict[str, dict[str, object]]]:
+    """Native 14-D X5 data, optionally with two/four DM image observations."""
+    tag = "arx_x5" if tactile_layout is None else f"arx_x5_tactile_{tactile_layout}"
+    mixture, metadata = build_single_lerobot_mixture(
+        name=tag,
+        tag=tag,
+        repo_ids=[os.environ.get("MOLMOACT2_X5_REPO_ID", "local/hot_stamp_bag_merged_0912")],
+        action_key="action",
+        state_keys=["observation.state"],
+        camera_keys=list(X5_RGB_IMAGE_KEYS),
+        normalize_gripper=False,
+        action_dim=14,
+        action_horizon=70,
+        n_action_steps=5,
+        setup_type="bimanual ARX X5 robotic arms",
+        control_mode="absolute joint pose",
+    )
+    if tactile_layout is not None:
+        metadata[f"lerobot:{tag}"].update(
+            tactile_keys=tactile_keys_for_layout(tactile_layout),
+            tactile_backend="as_image",
+            tactile_layout=tactile_layout,
+        )
+    return mixture, metadata
+
+
 MOLMOACT2_LEROBOT_MIXTURES: Dict[str, MixtureBuilder] = {
     "pre_post_train": build_molmoact2_pre_post_train,
     "droid": build_molmoact2_droid,
@@ -396,4 +425,8 @@ MOLMOACT2_LEROBOT_MIXTURES: Dict[str, MixtureBuilder] = {
     "libero_goal": build_molmoact2_libero_goal,
     "yam": build_molmoact2_yam,
     "so100_so101": build_molmoact2_so100_so101,
+    "x5": build_molmoact2_x5,
+    "x5_tactile": lambda: build_molmoact2_x5("two"),
+    "x5_tactile_two": lambda: build_molmoact2_x5("two"),
+    "x5_tactile_four": lambda: build_molmoact2_x5("four"),
 }

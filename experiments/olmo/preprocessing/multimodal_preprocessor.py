@@ -103,7 +103,7 @@ class MultimodalPreprocessor:
         image_group=None,
         weight=None,
         metadata=None,
-        apply_augmentation: bool = True,
+        apply_augmentation: bool | list[bool] = True,
     ):
         if sum([
             video is not None,
@@ -362,24 +362,31 @@ class ExamplePreprocessor:
             rng.shuffle(messages)
 
         try:
-            apply_augmentation = True
+            apply_augmentation = example.get("image_augmentation_mask", True)
+            if isinstance(apply_augmentation, (list, tuple)):
+                n_images = len(image_group) if image_group is not None else int(image is not None)
+                if len(apply_augmentation) != n_images:
+                    raise ValueError("Image augmentation mask must match the number of images.")
+                if image_group is not None:
+                    limit = self.preprocessor.multi_image_preprocessor.max_images
+                    if limit is not None and n_images > limit:
+                        raise ValueError("The image limit would truncate configured tactile observations; increase max_images.")
+                if image is not None:
+                    apply_augmentation = bool(apply_augmentation[0])
             if self.include_image:
                 if image is not None:
-                    image = self.preprocessor.image_preprocessor.image_preprocessor.maybe_augment_image(
-                        image,
-                        self.is_training,
-                        rng,
-                    )
+                    if apply_augmentation:
+                        image = self.preprocessor.image_preprocessor.image_preprocessor.maybe_augment_image(
+                            image, self.is_training, rng,
+                        )
                     apply_augmentation = False
                 elif image_group is not None:
-                    image_group = [
-                        self.preprocessor.multi_image_preprocessor.image_preprocessor.image_preprocessor.maybe_augment_image(
-                            img,
-                            self.is_training,
-                            rng,
-                        )
-                        for img in image_group
-                    ]
+                    pixel_pp = self.preprocessor.multi_image_preprocessor.image_preprocessor.image_preprocessor
+                    augmented = []
+                    for idx, img in enumerate(image_group):
+                        enabled = apply_augmentation[idx] if isinstance(apply_augmentation, (list, tuple)) else apply_augmentation
+                        augmented.append(pixel_pp.maybe_augment_image(img, self.is_training, rng) if enabled else img)
+                    image_group = augmented
                     apply_augmentation = False
             out = self.preprocessor(
                 messages, video=video, image=image,
