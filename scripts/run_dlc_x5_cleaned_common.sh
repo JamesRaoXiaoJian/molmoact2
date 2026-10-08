@@ -24,7 +24,8 @@ export DLC_WANDB_PROJECT=molmoact2-x5-cleaned-tactile-ablation
 source /root/RXJ/dlc_shared/wandb_env.sh "$RUN_DIR"
 source "$PROJECT/artifacts/ffmpeg-libs/env.sh"
 export HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1 TRANSFORMERS_OFFLINE=1
-export HF_HOME="$RUN_DIR/cache/huggingface" HF_MODULES_CACHE="$RUN_DIR/cache/huggingface/modules"
+export HF_HOME="$PROJECT/data/hf-cache" HF_MODULES_CACHE="$RUN_DIR/cache/huggingface/modules"
+export HF_HUB_CACHE="$HF_HOME/hub" HUGGINGFACE_HUB_CACHE="$HF_HOME/hub" TRANSFORMERS_CACHE="$HF_HOME/hub"
 export PYTHONPATH="$CODE/experiments:$CODE/experiments/lerobot/src"
 export MOLMO_DATA_DIR="$PROJECT/data/molmo"
 export OLMO_SHARED_FS=1 TOKENIZERS_PARALLELISM=false
@@ -65,6 +66,7 @@ COMMON=(
   --use_annotated_task=false --sample_annotated_task=false
   --enable_depth_reasoning=false --style_robot_action=1.0 --style_robot_depth=0.0 --style_robot_depth_action=0.0
   --frame_loading_backend=av --seed=42 --data.seed=42
+  --model.llm.tokenizer.tokenizer_dir=/root/RXJ/molmoact2/data/hf-cache/hub
   --scheduler.connector_t_warmup=500 --scheduler.vit_t_warmup=500
   --scheduler.llm_t_warmup=500 --scheduler.action_expert_t_warmup=500
   --scheduler.alpha_f=0.1 --max_grad_norm=1.0 --activation_checkpointing=true
