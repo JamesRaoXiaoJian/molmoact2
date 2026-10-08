@@ -23,6 +23,9 @@ export PYTHONNOUSERSITE=1 OMP_NUM_THREADS=2 MKL_NUM_THREADS=2
 export DLC_WANDB_PROJECT=molmoact2-x5-cleaned-tactile-ablation
 source /root/RXJ/dlc_shared/wandb_env.sh "$RUN_DIR"
 source "$PROJECT/artifacts/ffmpeg-libs/env.sh"
+# Keep CUDA and cuDNN sublibraries from the same shared PyTorch wheel set.
+CUDA_WHEEL_LIBS=$(find "$PROJECT/.venv/lib/python3.12/site-packages/nvidia" -maxdepth 2 -type d -name lib -print | paste -sd: -)
+export LD_LIBRARY_PATH="$PROJECT/.venv/lib/python3.12/site-packages/torch/lib:$CUDA_WHEEL_LIBS${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 export HF_HOME="$PROJECT/data/hf-cache" HF_MODULES_CACHE="$RUN_DIR/cache/huggingface/modules"
 export HF_HUB_CACHE="$HF_HOME/hub" HUGGINGFACE_HUB_CACHE="$HF_HOME/hub" TRANSFORMERS_CACHE="$HF_HOME/hub"
