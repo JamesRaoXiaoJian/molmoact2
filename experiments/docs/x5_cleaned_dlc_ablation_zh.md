@@ -69,3 +69,30 @@ python3 /root/.codex/skills/dlc/scripts/submit.py \
 每个作业完成缓存 staging 后，先以相同 8 GPU、batch 64 和正式参数运行 2 步 smoke，
 成功后从预训练权重和 seed 42 重新开始正式训练。W&B 凭据仅由共享的受限文件加载；
 正式训练默认在线，项目名为 `molmoact2-x5-cleaned-tactile-ablation`。
+
+## W&B 对照面板
+
+训练真实主损失为 `train/action_flow_loss`，每 10 个 optimizer steps 上传。
+`configure_x5_wandb_workspace.py` 从已上传 history 检查有限 loss 和递增 step，
+再保存有序面板：动作损失、训练进度、学习率与梯度、训练速度与显存。
+首屏同时保留原始损失、带原始曲线的平滑趋势和最新数值。
+RGB / MAE 使用蓝色 / 橙色；MAE 专属指标仅在实际上传后加入，避免空面板。
+GPU 利用率来自独立系统采集流，因此以已用时间为横轴。
+没有独立验证集，本面板不显示验证 loss 或成功率。
+
+布局修改只使用 W&B 服务端 API，不连接或重启训练进程，也不另启同一 run 的 logger。
+修改前备份 workspace，修改后回读检查首屏及 section 顺序；重复执行更新同一 saved view。
+需要 `wandb-workspaces`，建议使用独立工具环境，不修改运行中训练所用的依赖：
+
+```bash
+source /root/RXJ/dlc_shared/wandb_env.sh /root/RXJ/molmoact2/outputs/dlc/x5_cleaned_ablation_20261008/observability
+/root/RXJ/dlc_shared/.venv-wandb-workspaces/bin/python \
+  experiments/scripts/configure_x5_wandb_workspace.py \
+  --entity jamesraoxiaojian-shenzhen-university \
+  --project molmoact2-x5-cleaned-tactile-ablation \
+  --record-dir outputs/dlc/x5_cleaned_ablation_20261008/observability \
+  --update-personal
+```
+
+`--update-personal` 同时整理当前 API 账号的默认 workspace，并在末尾保留折叠的原始诊断分组。
+saved view 的直达链接和数据核验结果保存在 `observability/workspace_verified.json`。
