@@ -215,6 +215,8 @@ def _build_policy(
     norm_tag: str,
     enable_inference_cuda_graph: bool,
     verbose: bool,
+    parameter_dtype: Optional[str] = None,
+    tokenizer_dir: Optional[str] = None,
 ) -> Any:
     resolved_device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     cfg = MolmoAct2Config(
@@ -228,6 +230,8 @@ def _build_policy(
         norm_tag=str(norm_tag or ""),
         enable_inference_cuda_graph=bool(enable_inference_cuda_graph),
         verbose=bool(verbose),
+        parameter_dtype=parameter_dtype,
+        tokenizer_dir=tokenizer_dir,
     )
     policy = MolmoAct2Policy(cfg)
     policy.eval()
@@ -296,6 +300,8 @@ class MolmoAct2Server:
         enable_inference_cuda_graph: bool = True,
         save_image_dir: Optional[str] = None,
         verbose: bool = False,
+        parameter_dtype: Optional[str] = None,
+        tokenizer_dir: Optional[str] = None,
     ) -> None:
         self.policy = _build_policy(
             checkpoint,
@@ -309,6 +315,8 @@ class MolmoAct2Server:
             norm_tag=norm_tag,
             enable_inference_cuda_graph=enable_inference_cuda_graph,
             verbose=verbose,
+            parameter_dtype=parameter_dtype,
+            tokenizer_dir=tokenizer_dir,
         )
         hf_backend = getattr(self.policy, "_hf_backend", None)
         self.use_hf_ckpt = hf_backend is not None
@@ -496,6 +504,7 @@ class MolmoAct2Server:
         return {
             "status": "ok",
             "device": str(self.device),
+            "parameter_dtype": self.policy.config.parameter_dtype,
             "default_seq_len": self.default_seq_len,
             "default_num_steps": self.default_num_steps,
             "n_obs_steps": self.n_obs_steps,
@@ -736,6 +745,9 @@ def main() -> None:
     parser.add_argument("--host", default="127.0.0.1", help="Bind host (loopback by default).")
     parser.add_argument("--port", type=int, default=8000, help="Bind port.")
     parser.add_argument("--device", default=None, help="Torch device override (e.g., cuda:0).")
+    parser.add_argument("--parameter_dtype", choices=("float32", "bfloat16", "float16"), default=None,
+                        help="Native checkpoint parameter precision; casts before GPU allocation.")
+    parser.add_argument("--tokenizer_dir", default=None, help="Native checkpoint tokenizer cache override.")
     parser.add_argument("--seq_len", type=int, default=None, help="Override max sequence length.")
     parser.add_argument("--num_steps", type=int, default=None, help="Override flow-matching steps.")
     parser.add_argument(
@@ -833,6 +845,8 @@ def main() -> None:
         enable_inference_cuda_graph=bool(args.enable_inference_cuda_graph),
         save_image_dir=args.save_image_dir,
         verbose=args.verbose,
+        parameter_dtype=args.parameter_dtype,
+        tokenizer_dir=args.tokenizer_dir,
     )
     server.run(args.host, args.port, timeout_keep_alive=int(args.timeout_keep_alive))
 

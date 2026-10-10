@@ -597,6 +597,8 @@ class MolmoAct2Policy(PreTrainedPolicy):
         checkpoint_config_path = Path(resource_path(checkpoint_dir, "config.yaml"))
         model_cfg = BaseModelConfig.load(checkpoint_config_path, key="model")
         model_cfg = _force_resize_crop_mode(model_cfg)
+        if cfg.tokenizer_dir is not None:
+            model_cfg.llm.tokenizer.tokenizer_dir = str(Path(cfg.tokenizer_dir).expanduser())
         raw_max_action_dim = getattr(model_cfg, "max_action_dim", None)
         if raw_max_action_dim is None:
             raw_max_action_dim = getattr(model_cfg, "action_dim")
@@ -646,6 +648,8 @@ class MolmoAct2Policy(PreTrainedPolicy):
 
         with torch.device("meta"):
             model = model_cfg.build_model()
+        if cfg.parameter_dtype is not None:
+            model.to(dtype=getattr(torch, cfg.parameter_dtype))
         model.to_empty(device=device)
         load_model_state(checkpoint_dir, model)
         if _disable_inference_token_bias(model):
@@ -1360,7 +1364,13 @@ class MolmoAct2Policy(PreTrainedPolicy):
                 batch_size=batch_size,
                 device=handles.device,
             )
-        with torch.no_grad():
+        parameter_dtype = getattr(self.config, "parameter_dtype", None)
+        use_autocast = parameter_dtype in {"bfloat16", "float16"}
+        with torch.no_grad(), torch.autocast(
+            device_type=handles.device.type,
+            dtype=getattr(torch, parameter_dtype) if use_autocast else torch.bfloat16,
+            enabled=use_autocast,
+        ):
             if handles.inference_action_mode == "continuous":
                 if style_uses_depth_output(style):
                     if style_uses_action_output(style):
@@ -1399,6 +1409,9 @@ class MolmoAct2Policy(PreTrainedPolicy):
                     return MolmoAct2InferenceResult(style=style)
                 action_chunk = handles.model.generate_actions(
                     **self._build_action_model_inputs(collated),
+                    # Continuous actions only consume the full KV states. Avoid
+                    # allocating unused [sequence, vocabulary] logits in low precision.
+                    last_logits_only=use_autocast,
                     action_dim_is_pad=action_dim_is_pad,
                     num_steps=resolved_num_steps,
                     generator=generator,

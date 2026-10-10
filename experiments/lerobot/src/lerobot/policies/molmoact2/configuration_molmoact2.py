@@ -38,6 +38,10 @@ class MolmoAct2Config(PreTrainedConfig):
     num_depth_tokens_per_image: Optional[int] = None
     verbose: bool = False
     norm_tag: str = ""
+    # Native checkpoints only: cast on meta before allocating device memory.
+    parameter_dtype: Optional[str] = None
+    # Override machine-specific tokenizer cache paths without editing checkpoints.
+    tokenizer_dir: Optional[str] = None
 
     # Provide minimal feature metadata to satisfy the policy factory. These will be
     # overridden at runtime by `make_policy` if dataset/env features are available.
@@ -48,6 +52,8 @@ class MolmoAct2Config(PreTrainedConfig):
 
     def __post_init__(self) -> None:
         super().__post_init__()
+        if self.parameter_dtype not in {None, "float32", "bfloat16", "float16"}:
+            raise ValueError(f"Unsupported parameter_dtype={self.parameter_dtype!r}.")
         self.inference_action_mode = str(self.inference_action_mode or "continuous").strip().lower()
         if self.inference_action_mode not in {"continuous", "discrete"}:
             raise ValueError(
