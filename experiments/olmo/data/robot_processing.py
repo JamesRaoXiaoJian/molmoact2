@@ -277,6 +277,7 @@ class _FeatureNormalizer:
         arr = _to_array(x)
         if arr is None:
             return None
+        raw = arr
         if _uses_bounded_normalized_range(self.mode):
             arr = np.clip(arr, -1.0, 1.0)
         unnorm = _unnormalize_array(
@@ -290,7 +291,7 @@ class _FeatureNormalizer:
             mode=self.mode,
         )
         if self.mask is not None:
-            unnorm = np.where(self.mask, unnorm, arr)
+            unnorm = np.where(self.mask, unnorm, raw)
         if torch.is_tensor(x):
             return torch.as_tensor(unnorm, device=x.device, dtype=x.dtype)
         return unnorm
