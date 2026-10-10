@@ -101,3 +101,47 @@ source /root/RXJ/dlc_shared/wandb_env.sh /root/RXJ/molmoact2/outputs/dlc/x5_clea
 两个 workspace 均关闭自动追加与字母排序，只保留实际有记录的必要指标白名单；
 原始布局保存在操作前备份中，可用于恢复。
 saved view 的直达链接和数据核验结果保存在 `observability/workspace_verified.json`。
+
+## 最终 checkpoint 离线推理检查
+
+`run_x5_inference_comparison.py` 使用两组 `step20000-unsharded` 原生模型，
+在相同 8 条轨迹的早、中、晚三个位置回放，共 24 个真实观测。
+RGB 仅输入左腕、右腕和头部相机；MAE 额外输入两路真实触觉。
+两组使用同一目标动作块、同一随机种子和 10 次 flow 积分，生成完整 `30×14` 动作块。
+另外检查相同种子的可重复性、ASGI HTTP 请求与直接调用的一致性、
+默认 5 步动作队列、会话重置、缺失触觉输入拒绝，以及置空／交换触觉的固定噪声对照。
+
+主回放使用原生 FP32 推理。另在 4 个相同观测上测量 BF16 autocast 并再次检查接口一致性；
+BF16 是本测试中的性能测量，不自动改变生产服务精度。
+已修复反归一化时对 `mask=False` 维度的误裁剪：
+未归一化夹爪值保留原值，归一化关节仍按 `[-1,1]` 裁剪后反变换。
+此修复不改变训练权重。
+
+```bash
+bash scripts/run_x5_inference_comparison.sh outputs/inference/x5_cleaned_20261010
+.venv/bin/python experiments/scripts/summarize_x5_inference_comparison.py \
+  outputs/inference/x5_cleaned_20261010
+```
+
+产物包括两组的 `summary.json`、逐样本误差、动作数组、触觉对照、BF16 profile，
+以及总表 `comparison.json`、配对误差 CSV、14 维动作曲线与误差图（PNG/PDF）。
+`policy_space_*` 指训练动作尺度：12 个关节按 q01/q99 归一化，2 个夹爪保持原单位；
+另外单独报告关节和夹爪误差。
+所有轨迹都参与了训练，因此这属于训练数据回放，不能据此报告独立验证结果或实机成功率。
+HTTP 检查使用内存中的 ASGI transport，不启动监听端口，不发送机械臂控制指令。
+实际服务入口 `serve_policy.py` 默认仅绑定 `127.0.0.1`。
+
+2026-10-10 在共享 A100 80GB 上的首轮结果：
+
+| 项目 | RGB | Tactile-MAE |
+|---|---:|---:|
+| 24 个观测的完整动作块 MSE（训练动作尺度） | 0.001753 | 0.001883 |
+| 前 5 步 MSE（训练动作尺度） | 0.001337 | 0.001335 |
+| FP32 中位推理时间 | 1.234 秒 | 1.336 秒 |
+| BF16 中位推理时间（4 观测参考测量） | 0.909 秒 | 0.959 秒 |
+
+两组直接调用、HTTP 完整动作块、5 步队列、reset、相同 seed 重复生成均通过。
+修复前 RGB 的夹爪 raw MAE 为 1.0124，修复后为 0.07131；测试输入和权重相同。
+两处触觉置空对照改变动作的平均绝对量约 `1.1e-4`，交换传感器约 `6e-6`
+（训练动作尺度），这两个观测的触觉响应较弱，不能据此证明触觉带来收益。
+当前延迟高于 5 步／30 Hz 对应的约 0.167 秒重规划间隔，需优化推理后再评估此执行配置。

@@ -733,7 +733,7 @@ def main() -> None:
         ),
     )
     parser.set_defaults(hf_ckpt=False)
-    parser.add_argument("--host", default="0.0.0.0", help="Bind host.")
+    parser.add_argument("--host", default="127.0.0.1", help="Bind host (loopback by default).")
     parser.add_argument("--port", type=int, default=8000, help="Bind port.")
     parser.add_argument("--device", default=None, help="Torch device override (e.g., cuda:0).")
     parser.add_argument("--seq_len", type=int, default=None, help="Override max sequence length.")
