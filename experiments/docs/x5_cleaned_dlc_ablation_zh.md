@@ -145,3 +145,55 @@ HTTP 检查使用内存中的 ASGI transport，不启动监听端口，不发送
 两处触觉置空对照改变动作的平均绝对量约 `1.1e-4`，交换传感器约 `6e-6`
 （训练动作尺度），这两个观测的触觉响应较弱，不能据此证明触觉带来收益。
 当前延迟高于 5 步／30 Hz 对应的约 0.167 秒重规划间隔，需优化推理后再评估此执行配置。
+
+## 2026-10-12 官方推理路径延迟对照
+
+`benchmark_x5_inference_paths.py` 在同一台 A100 80GB、batch 1、BF16 参数与 autocast 下，
+使用 2 条轨迹的 6 个真实观测，重复 3 轮；模型生成 30 帧动作，每次计时都等待 GPU 完成。
+计时包含预处理、设备拷贝、模型和后处理，不包含网络及机器人执行。
+官方对照使用现有 `artifacts/models/MolmoAct2` 的原始 HF 权重和 `predict_action`。
+权重不修改；仅在单独复制的评估目录中添加同一份 X5 RGB 归一化元数据，
+并应用官方机器人 server 同样使用的 BF16→NumPy 兼容修复。
+因此这是同输入的延迟对照，不是官方原始模型在 X5 上的任务效果评估。
+
+| 路径 | 4 次 flow 积分 | 10 次 flow 积分 | 30 次 flow 积分 |
+|---|---:|---:|---:|
+| 当前原生 RGB | 420 ms | 914 ms | 2,540 ms |
+| 当前原生 MAE | 438 ms | 919 ms | 2,427 ms |
+| 官方 HF，关闭 CUDA Graph | 262 ms | 505 ms | 1,329 ms |
+| 官方 HF，开启 CUDA Graph，固定输入形状稳定测量 | 142 ms | 210 ms | 434 ms |
+
+前三行是 18 次混合观测的中位数，最后一行是预热后相同输入形状 8 次测量的中位数。
+图模式固定形状的 10 次积分 P95 为 212 ms；混合输入形状的 P95 为 1,128 ms，
+因为当前官方 graph manager 只缓存一个形状，切换 prompt 长度会重新捕获图。
+这两个统计不能混用。
+
+10 次积分的独立 profiling 显示：原生 RGB 的动作专家阶段约 795 ms，
+其中 KV 准备累计约 183 ms、调用 10 次；官方关闭 graph 时动作专家约 391 ms，
+KV 准备约 10 ms、调用 1 次。MAE 触觉编码约 12 ms。
+CUDA event 分段计时包含其间的 CPU dispatch/同步等待；嵌套分段不能相加。
+
+返回 5／15／30 帧时，原生 RGB 分别约 907／897／916 ms，MAE 约 869／871／884 ms。
+生成的动作 horizon 始终为 30；返回长度只是切片，不会减少 flow 模型计算。
+官方 graph 路径分别约 211／210／209 ms。
+
+[官方公开数字](https://allenai.org/blog/molmoact2) 为单张 H100、LIBERO 环境下
+基础模型约 180 ms，深度推理模型约 790 ms，属于另一种硬件与输入条件。
+本轮没有可用的 5080 Laptop SSH 连接，以上实测不能标为 5080 Laptop 120W 实测。
+
+报告目录：`outputs/inference/latency_official_20261012/`，包括各路径 JSON、
+总表 `comparison.json`、`latency.csv`、PNG/PDF 对照图和完整日志。
+官方第一次尝试的计时矩阵已成功完成，后续 profiling hook 名称错误导致退出；
+第二次复用那些原始计时记录并补齐固定形状测试及 profiling，原始记录留在
+`official_attempt0_profile_hook.log`。
+
+```bash
+# 使用已完成部署的两个小样本，无需完整数据集或 packed cache。
+.venv/bin/python experiments/scripts/benchmark_x5_inference_paths.py \
+  --route rgb --samples-dir data/offline_samples --output outputs/inference/latency
+# 同样可测 --route mae。
+# 官方原始 HF 模型需预先存在；路径可由 --official-model 指定。
+.venv/bin/python experiments/scripts/benchmark_x5_inference_paths.py \
+  --route official --samples-dir data/offline_samples \
+  --official-model /path/to/official/MolmoAct2 --output outputs/inference/latency
+```
