@@ -232,6 +232,9 @@ def build_bridge(mode, checkpoint=None, norm_tag=None, tokenizer_dir=None):
     optimization = os.environ.get("MOLMO_NATIVE_OPTIMIZATION", "graph")
     if optimization not in {"baseline", "context", "deferred", "modcache", "graph"}:
         raise ValueError("Unknown MOLMO_NATIVE_OPTIMIZATION")
+    compile_setting = os.environ.get("MOLMO_COMPILE_ACTION_EXPERT", "0")
+    if compile_setting not in {"0", "1"}:
+        raise ValueError("MOLMO_COMPILE_ACTION_EXPERT must be 0 or 1")
     molmo = MolmoAct2Server(
         checkpoint=checkpoint
         or str(
@@ -260,11 +263,18 @@ def build_bridge(mode, checkpoint=None, norm_tag=None, tokenizer_dir=None):
     handles = getattr(getattr(molmo, "policy", None), "_handles", None)
     if handles is not None:
         handles.model.native_inference_optimization = optimization
+        if compile_setting == "1":
+            from olmo.nn.native_action_compile import compile_action_blocks
+
+            compile_action_blocks(handles.model)
+    elif compile_setting == "1":
+        raise ValueError("Action block compilation requires the native checkpoint backend")
     bridge = OpenPIBridge(molmo, mode)
     bridge.metadata["norm_tag"] = tag
     bridge.metadata["native_inference_optimization"] = (
         optimization if handles is not None else "hf_backend"
     )
+    bridge.metadata["native_action_blocks_compiled"] = compile_setting == "1"
     return bridge
 
 
