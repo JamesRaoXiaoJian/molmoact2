@@ -139,3 +139,21 @@ def test_graph_flow_callable_matches_same_eager_flow_on_cpu():
         actual, valid = _flow(model, expert, noise, context, modulations, padding, 10)
     assert bool(valid)
     torch.testing.assert_close(actual, original, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("qk_norm", [True, False])
+@pytest.mark.parametrize("rope", [True, False])
+def test_static_context_cpu_autocast_and_optional_attention_features(qk_norm, rope):
+    model, expert, kv, state, mask = setup_expert()
+    for block in expert.blocks:
+        if not qk_norm:
+            block.self_attn.q_norm = block.self_attn.k_norm = None
+            block.cross_attn.q_norm = block.cross_attn.k_norm = None
+        if not rope:
+            block.self_attn.rope = None
+    with torch.no_grad(), torch.autocast("cpu", dtype=torch.bfloat16):
+        expert.optimize_static_inference = False
+        expected = generate(model, kv, state, mask, "modcache")
+        expert.optimize_static_inference = True
+        actual = generate(model, kv, state, mask, "modcache")
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)

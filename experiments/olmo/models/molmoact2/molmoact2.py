@@ -776,6 +776,10 @@ class MolmoAct2(Molmo2):
         Sequence[tuple[torch.Tensor, torch.Tensor]] | None,
     ]:
         kwargs = dict(forward_kwargs)
+        kwargs["inference_static_ops"] = (
+            getattr(self, "native_inference_optimization", "baseline") != "baseline"
+            and getattr(self, "optimize_backbone_inference", True)
+        )
         tactile_images = kwargs.pop("tactile_images", None)
         tactile_mask = kwargs.pop("tactile_token_mask", None)
         if tactile_images is not None:

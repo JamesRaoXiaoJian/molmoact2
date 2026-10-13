@@ -104,22 +104,26 @@ class ActionExpertRotaryEmbedding(nn.Module):
         self.head_dim = head_dim
         self.base = base
 
-    def forward(
-        self, q: torch.Tensor, k: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        seq_len = q.shape[-2]
+    def prepare_cache(self, seq_len, device, dtype):
         half_dim = self.head_dim // 2
         inv_freq = 1.0 / (
             self.base
             ** (
-                torch.arange(0, half_dim, device=q.device, dtype=torch.float32)
+                torch.arange(0, half_dim, device=device, dtype=torch.float32)
                 / max(half_dim, 1)
             )
         )
-        positions = torch.arange(seq_len, device=q.device, dtype=torch.float32)
+        positions = torch.arange(seq_len, device=device, dtype=torch.float32)
         freqs = torch.outer(positions, inv_freq)
-        cos = freqs.cos().to(dtype=q.dtype).view(1, 1, seq_len, half_dim)
-        sin = freqs.sin().to(dtype=q.dtype).view(1, 1, seq_len, half_dim)
+        cos = freqs.cos().to(dtype=dtype).view(1, 1, seq_len, half_dim)
+        sin = freqs.sin().to(dtype=dtype).view(1, 1, seq_len, half_dim)
+        return cos, sin
+
+    def forward(
+        self, q: torch.Tensor, k: torch.Tensor, prepared=None
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        half_dim = self.head_dim // 2
+        cos, sin = self.prepare_cache(q.shape[-2], q.device, q.dtype) if prepared is None else prepared
 
         def _apply(x: torch.Tensor) -> torch.Tensor:
             x1, x2 = x[..., :half_dim], x[..., half_dim:]
@@ -207,6 +211,7 @@ class ActionExpertSelfAttention(nn.Module):
         *,
         attn_mask: torch.Tensor | None = None,
         is_causal: bool = False,
+        prepared_rope: tuple | None = None,
     ) -> torch.Tensor:
         bsz, seq_len, _ = x.shape
         qkv = self.qkv(x).view(bsz, seq_len, 3, self.num_heads, self.head_dim)
@@ -217,7 +222,7 @@ class ActionExpertSelfAttention(nn.Module):
         k = k.transpose(1, 2)
         q, k = self._apply_qk_norm(q, k)
         if self.rope is not None:
-            q, k = self.rope(q, k)
+            q, k = self.rope(q, k, prepared_rope)
         q = q.transpose(1, 2)
         k = k.transpose(1, 2)
         v = v.contiguous()
@@ -317,6 +322,7 @@ class ActionExpertCrossAttention(nn.Module):
         kv_k: torch.Tensor | None = None,
         kv_v: torch.Tensor | None = None,
         attn_mask: torch.Tensor | None = None,
+        key_normalized: bool = False,
     ) -> torch.Tensor:
         if (kv_k is None) != (kv_v is None):
             raise ValueError("kv_k and kv_v must both be provided or both be None.")
@@ -339,7 +345,11 @@ class ActionExpertCrossAttention(nn.Module):
 
         q = q.transpose(1, 2)
         k = k.transpose(1, 2)
-        q, k = self._apply_qk_norm(q, k)
+        if key_normalized:
+            if self.q_norm is not None and self.k_norm is not None:
+                q = self.q_norm(q)
+        else:
+            q, k = self._apply_qk_norm(q, k)
         q = q.transpose(1, 2)
         k = k.transpose(1, 2)
         out = self._attention(q, k, v, attn_mask=attn_mask)
@@ -435,6 +445,8 @@ class ActionExpertBlock(nn.Module):
         attn_mask: torch.Tensor | None = None,
         is_causal: bool = False,
         prepared_modulation: tuple | None = None,
+        prepared_rope: tuple | None = None,
+        cross_key_normalized: bool = False,
     ) -> torch.Tensor:
         (
             shift_msa,
@@ -456,6 +468,7 @@ class ActionExpertBlock(nn.Module):
             _modulate(self.self_norm(x), shift_msa, scale_msa),
             attn_mask=self_attn_mask,
             is_causal=is_causal,
+            prepared_rope=prepared_rope,
         )
 
         attn_kwargs = {}
@@ -469,6 +482,7 @@ class ActionExpertBlock(nn.Module):
         x = x + gate_mca.unsqueeze(1) * self.cross_attn(
             _modulate(self.cross_norm(x), shift_mca, scale_mca),
             attn_mask=attn_mask,
+            key_normalized=cross_key_normalized,
             **attn_kwargs,
         )
 
@@ -976,10 +990,33 @@ class ActionExpert(nn.Module):
             encoded, finite_checks, "encoded_state"
         ):
             raise RuntimeError("Non-finite encoded state; no actions returned")
+        kv = self._prepare_kv_context(encoder_kv_states, encoded, finite_checks=finite_checks)
+        static_ops = getattr(self, "optimize_static_inference", True)
+        rope_cache = None
+        if static_ops:
+            normalized_kv = []
+            for index, (block, (key, value)) in enumerate(zip(self.blocks, kv)):
+                if block.cross_attn.q_norm is not None and block.cross_attn.k_norm is not None:
+                    key = block.cross_attn.k_norm(key.transpose(1, 2)).transpose(1, 2)
+                    if not _inference_finite(key, finite_checks, f"context_{index}_normalized_key"):
+                        raise RuntimeError("Non-finite normalized key; no actions returned")
+                normalized_kv.append((key, value))
+            kv = tuple(normalized_kv)
+            rope_key = (seq_len, device, dtype, tuple(
+                None if block.self_attn.rope is None else
+                (block.self_attn.rope.head_dim, block.self_attn.rope.base)
+                for block in self.blocks))
+            if getattr(self, "_inference_rope_key", None) != rope_key:
+                self._inference_rope_values = tuple(
+                    None if block.self_attn.rope is None else
+                    block.self_attn.rope.prepare_cache(seq_len, device, dtype)
+                    for block in self.blocks)
+                self._inference_rope_key = rope_key
+            rope_cache = self._inference_rope_values
         return {
-            "kv": self._prepare_kv_context(
-                encoder_kv_states, encoded, finite_checks=finite_checks
-            ),
+            "kv": kv,
+            "cross_key_normalized": static_ops,
+            "rope": rope_cache,
             "cross_mask": self._build_cross_attention_mask(
                 encoder_attention_mask, encoded, batch_size, dtype
             ),
@@ -1046,6 +1083,8 @@ class ActionExpert(nn.Module):
                 prepared_modulation=None
                 if step_modulations is None
                 else step_modulations[1][index],
+                prepared_rope=None if prepared_context.get("rope") is None else prepared_context["rope"][index],
+                cross_key_normalized=prepared_context.get("cross_key_normalized", False),
             )
             if not _inference_finite(x, finite_checks, f"block_{index}"):
                 raise RuntimeError(

@@ -2312,6 +2312,7 @@ class OLMoSequentialBlock(OLMoBlock):
         pos_sin: Optional[torch.Tensor] = None,
         pos_cos: Optional[torch.Tensor] = None,
         freqs_cis: Optional[torch.Tensor] = None,
+        reuse_prepared_kv: bool = False,
     ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]]]:
         # Get query, key, value projections.
         # shape:
@@ -2336,7 +2337,11 @@ class OLMoSequentialBlock(OLMoBlock):
         q, k, v = qkv.split(self.fused_dims, dim=-1)
 
         collected_cache = None
-        if collect_kv_states and not use_cache:
+        attention_use_cache = use_cache or (
+            reuse_prepared_kv and collect_kv_states and not enable_cp
+            and not self.training and not torch.is_grad_enabled()
+        )
+        if collect_kv_states and not attention_use_cache:
             _, cache_k, cache_v = self._prepare_attention_qkv(
                 q,
                 k,
@@ -2365,13 +2370,13 @@ class OLMoSequentialBlock(OLMoBlock):
             if self.fine_grained_checkpoint_fn is not None:
                 att, cache = self.fine_grained_checkpoint_fn(  # type: ignore
                     self.attention, q, k, v, attention_bias, position_ids=position_ids,
-                    drop_mask=drop_mask, layer_past=layer_past, use_cache=use_cache,
+                    drop_mask=drop_mask, layer_past=layer_past, use_cache=attention_use_cache,
                     value_scaling=value_scaling
                 )
             else:
                 att, cache = self.attention(
                     q, k, v, attention_bias, position_ids=position_ids, drop_mask=drop_mask,
-                    layer_past=layer_past, use_cache=use_cache, value_scaling=value_scaling)
+                    layer_past=layer_past, use_cache=attention_use_cache, value_scaling=value_scaling)
         if collected_cache is not None:
             cache = collected_cache
 

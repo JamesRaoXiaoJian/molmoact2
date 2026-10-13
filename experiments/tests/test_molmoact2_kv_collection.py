@@ -133,3 +133,35 @@ def test_run_backbone_collects_kv_without_forcing_use_cache(monkeypatch: pytest.
     assert layer_states == expected_hidden_states
     assert layer_kv_states == expected_cache
     assert base_output.attn_key_values is None
+
+
+@pytest.mark.parametrize("qwen_norm", [False, True])
+@pytest.mark.parametrize("bidirectional", [False, True])
+def test_prepared_kv_reuse_preserves_outputs_masks_and_cache(monkeypatch, qwen_norm, bidirectional):
+    torch.manual_seed(47)
+    block, cfg = _build_block(BlockType.sequential, qwen3_qk_norm=qwen_norm)
+    block.eval()
+    x = torch.randn(2, 6, cfg.d_model)
+    positions = torch.arange(6).expand(2, -1)
+    allowed = torch.ones(6, 6, dtype=torch.bool).tril()
+    if bidirectional:
+        allowed[:3, :3] = True
+    bias = torch.where(allowed, 0.0, torch.finfo(torch.float32).min)[None, None]
+    calls = []
+    prepare = block._prepare_attention_qkv
+
+    def counted(*args, **kwargs):
+        calls.append(1)
+        return prepare(*args, **kwargs)
+
+    monkeypatch.setattr(block, "_prepare_attention_qkv", counted)
+    with torch.no_grad():
+        original, original_kv = block(x, attention_bias=bias, position_ids=positions, collect_kv_states=True)
+        assert len(calls) == 2
+        calls.clear()
+        actual, actual_kv = block(x, attention_bias=bias, position_ids=positions,
+                                  collect_kv_states=True, reuse_prepared_kv=True)
+        assert len(calls) == 1
+    torch.testing.assert_close(actual, original, rtol=0, atol=0)
+    for actual_tensor, original_tensor in zip(actual_kv, original_kv):
+        torch.testing.assert_close(actual_tensor, original_tensor, rtol=0, atol=0)

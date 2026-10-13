@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import signal
 import sys
 from pathlib import Path
@@ -18,7 +19,7 @@ from openpi_main_smoke import Scenario, install_import_traps
 from serve_x5_openpi import OpenPIBridge
 from x5_openpi_control import load_control_main, load_mock_main
 
-OPENPI = Path.home() / "lwm_ws/openpi-x5-arx5-beta/openpi"
+OPENPI = Path(os.environ.get("OPENPI_ROOT", Path.home() / "lwm_ws/openpi-x5-arx5-beta/openpi"))
 DEVICE_ARGS = [
     "--left-camera=mock-left",
     "--right-camera=mock-right",
@@ -168,6 +169,7 @@ def test_formal_cli_original_main_lifecycle(monkeypatch, mode, kind):
     monkeypatch.setattr(x5_openpi_control, "load_control_main", mocked_loader)
     argv = [
         f"--mode={mode}",
+        f"--openpi-root={OPENPI}",
         *DEVICE_ARGS,
         *CONTROL_ARGS,
         "--prompt=authorized offline task",

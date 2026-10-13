@@ -41,7 +41,7 @@ from olmo.nn.legacy_config import convert_legacy_config
 from olmo.preprocessing.multimodal_collator import MMCollator
 from olmo.preprocessing.multimodal_preprocessor import ExamplePreprocessor
 from olmo.tokenizer import get_special_token_ids
-from olmo.nn.llm import LlmConfig, Llm, OLMoBlock
+from olmo.nn.llm import LlmConfig, Llm, OLMoBlock, OLMoSequentialBlock
 from olmo.nn.llm import RoPEBuffers
 from olmo.nn.cp_load_balancer import CPLoadBalancerType, CPLoadBalancer
 from olmo.nn.vision_backbone import MolmoVisionBackbone, MolmoVisionBackboneConfig
@@ -672,6 +672,7 @@ class Molmo2(ModelBase):
         collect_layer_kv_states: bool = False,
         additional_token_embeddings: torch.Tensor | None = None,
         additional_token_mask: torch.Tensor | None = None,
+        inference_static_ops: bool = False,
         **kwargs,
     ) -> OLMoOutput:
         """
@@ -709,6 +710,7 @@ class Molmo2(ModelBase):
             This can speed up decoding when you only care about the next token.
         """
         output_hidden_states = output_hidden_states if output_hidden_states is not None else False
+        inference_static_ops = inference_static_ops and not self.training and not torch.is_grad_enabled()
 
         if past_key_values:
             assert len(past_key_values) == self.config.llm.n_layers
@@ -857,7 +859,7 @@ class Molmo2(ModelBase):
                 else:
                     image_features = vision_backbone_output
                 is_high_res_patch = input_ids.view(-1) == self._image_high_res_id
-                if any(is_high_res_patch):
+                if (bool(is_high_res_patch.any()) if inference_static_ops else any(is_high_res_patch)):
                     x = self._functional_masked_add(x, is_high_res_patch, image_features)
                     if deepstack_image_features is not None:
                         image_pos_masks = [is_high_res_patch]
@@ -952,11 +954,17 @@ class Molmo2(ModelBase):
         )
         all_hidden_states = []
         block_hidden_states: Optional[List[torch.Tensor]] = [] if collect_layer_hidden_states else None
+        if inference_static_ops and attention_bias is not None:
+            # The same padding/causal bias was converted independently in all
+            # decoder blocks. Preserve the conversion but perform it once.
+            attention_bias = OLMoBlock._cast_attn_bias(attention_bias, x.dtype)
         for block_idx, block in enumerate(self.transformer.blocks):
             if output_hidden_states:
                 # add hidden states
                 all_hidden_states.append(x)
             block_kwargs = per_block_kwargs.get(block_idx, {})
+            if inference_static_ops and isinstance(block, OLMoSequentialBlock):
+                block_kwargs = {**block_kwargs, "reuse_prepared_kv": True}
             layer_past = None if past_key_values is None else past_key_values[block_idx]
             x, cache = block(
                 x,
