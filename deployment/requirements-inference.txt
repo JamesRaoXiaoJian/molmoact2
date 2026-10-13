@@ -32,3 +32,7 @@ fiddle
 pytest
 pyserial==3.5
 deepdiff>=7.0.1,<9.0.0
+# OpenPI-compatible loopback transport and existing client chunk broker.
+websockets==15.0.1
+msgpack==1.1.0
+dm-tree==0.1.9

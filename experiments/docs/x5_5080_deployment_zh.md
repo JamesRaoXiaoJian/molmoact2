@@ -2,7 +2,7 @@
 
 目标项目为 `~/rxj_ws/molmoact2`，隔离环境为该项目 `.venv`。
 原始代码来自 `JamesRaoXiaoJian/molmoact2` 的 `feat/tactile`，部署基线提交为
-`76036895de5e2b80ca9031b09cf5d60a172e05cf`。
+`14332662f042386194ae8c0caf7ed88926437d28`。
 训练冻结版本为 RGB `c3c0a2e7f58cdbab7360098016b5792985e1fde8`，
 MAE worker fix `5c8982bdc0ee74c1296109490cf95054fd8a9484`。
 源 `/root/molmoact2` 是 `/root/RXJ/molmoact2` 的符号链接。
@@ -23,7 +23,7 @@ RGB 原始 model.pt 为 21,962,673,375 字节；MAE 为 23,193,643,844 字节。
 低精度连续动作路径仅计算最后一个 token 的未使用语言 logits，保留全序列 KV conditioning，
 避免分配大尺寸的“序列长度 × 词表”张量。CPU 回归检查 KV 与固定噪声动作完全一致。
 原生推理调用同时启用对应 autocast；默认未传该参数的行为保留。
-关闭 inference CUDA graph 以减少部署显存需求。
+HF 后端的 inference CUDA graph 开关仍关闭；正式 X5 WebSocket 入口使用独立的原生 action-flow Graph，见性能报告。
 这与 A100 上的 FP32 基线精度不同，测试报告记录实际数值偏差。
 
 两份 config.yaml 完全保留原文和源 SHA-256。

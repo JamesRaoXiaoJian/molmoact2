@@ -1,18 +1,21 @@
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Optional, Sequence, Tuple
 
 import torch
 import torch.nn.functional as F
-from torch import nn
-from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoint_wrapper
-from torch.distributed.fsdp import fully_shard
-
 from olmo.config import BaseConfig, D
 from olmo.nn.flash_attention_api import dispatch_flash_attn
+from torch import nn
+from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
+    checkpoint_wrapper,
+)
+from torch.distributed.fsdp import fully_shard
 
 
-def _modulate(x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
+def _modulate(
+    x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor
+) -> torch.Tensor:
     return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
 
 
@@ -34,20 +37,22 @@ def _init_linear(linear: nn.Linear, *, zero: bool = False, scale: float = 1.0) -
         nn.init.zeros_(linear.bias)
 
 
-def _tensor_all_finite(tensor: Optional[torch.Tensor]) -> Optional[bool]:
+def _tensor_all_finite(tensor: torch.Tensor | None) -> bool | None:
     if tensor is None:
         return None
     return bool(torch.isfinite(tensor).all().item())
 
 
-def _tensor_max_abs(tensor: Optional[torch.Tensor]) -> Optional[float]:
+def _tensor_max_abs(tensor: torch.Tensor | None) -> float | None:
     if tensor is None:
         return None
-    safe = torch.nan_to_num(tensor.detach().to(torch.float32), nan=0.0, posinf=0.0, neginf=0.0)
+    safe = torch.nan_to_num(
+        tensor.detach().to(torch.float32), nan=0.0, posinf=0.0, neginf=0.0
+    )
     return float(safe.abs().max().item())
 
 
-def _nonfinite_batch_rows(tensor: Optional[torch.Tensor]) -> Optional[list[int]]:
+def _nonfinite_batch_rows(tensor: torch.Tensor | None) -> list[int] | None:
     if tensor is None or tensor.ndim == 0:
         return None
     bad = ~torch.isfinite(tensor)
@@ -99,12 +104,17 @@ class ActionExpertRotaryEmbedding(nn.Module):
         self.head_dim = head_dim
         self.base = base
 
-    def forward(self, q: torch.Tensor, k: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(
+        self, q: torch.Tensor, k: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         seq_len = q.shape[-2]
         half_dim = self.head_dim // 2
         inv_freq = 1.0 / (
             self.base
-            ** (torch.arange(0, half_dim, device=q.device, dtype=torch.float32) / max(half_dim, 1))
+            ** (
+                torch.arange(0, half_dim, device=q.device, dtype=torch.float32)
+                / max(half_dim, 1)
+            )
         )
         positions = torch.arange(seq_len, device=q.device, dtype=torch.float32)
         freqs = torch.outer(positions, inv_freq)
@@ -138,14 +148,20 @@ class ActionExpertSelfAttention(nn.Module):
         self.head_dim = hidden_size // num_heads
         self.attn_dropout = attn_dropout
         self.qk_norm = qk_norm
-        self.q_norm = ActionExpertRMSNorm(self.head_dim, eps=qk_norm_eps) if qk_norm else None
-        self.k_norm = ActionExpertRMSNorm(self.head_dim, eps=qk_norm_eps) if qk_norm else None
+        self.q_norm = (
+            ActionExpertRMSNorm(self.head_dim, eps=qk_norm_eps) if qk_norm else None
+        )
+        self.k_norm = (
+            ActionExpertRMSNorm(self.head_dim, eps=qk_norm_eps) if qk_norm else None
+        )
         self.rope = ActionExpertRotaryEmbedding(self.head_dim) if use_rope else None
         self.qkv = nn.Linear(hidden_size, hidden_size * 3)
         self.out_proj = nn.Linear(hidden_size, hidden_size)
         self.out_drop = nn.Dropout(proj_dropout)
 
-    def _apply_qk_norm(self, q: torch.Tensor, k: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _apply_qk_norm(
+        self, q: torch.Tensor, k: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         if self.q_norm is None or self.k_norm is None:
             return q, k
         return self.q_norm(q), self.k_norm(k)
@@ -156,7 +172,7 @@ class ActionExpertSelfAttention(nn.Module):
         k: torch.Tensor,
         v: torch.Tensor,
         *,
-        attn_mask: Optional[torch.Tensor] = None,
+        attn_mask: torch.Tensor | None = None,
         is_causal: bool = False,
     ) -> torch.Tensor:
         dropout_p = self.attn_dropout if self.training else 0.0
@@ -189,7 +205,7 @@ class ActionExpertSelfAttention(nn.Module):
         self,
         x: torch.Tensor,
         *,
-        attn_mask: Optional[torch.Tensor] = None,
+        attn_mask: torch.Tensor | None = None,
         is_causal: bool = False,
     ) -> torch.Tensor:
         bsz, seq_len, _ = x.shape
@@ -229,14 +245,20 @@ class ActionExpertCrossAttention(nn.Module):
         self.num_heads = num_heads
         self.head_dim = hidden_size // num_heads
         self.attn_dropout = attn_dropout
-        self.q_norm = ActionExpertRMSNorm(self.head_dim, eps=qk_norm_eps) if qk_norm else None
-        self.k_norm = ActionExpertRMSNorm(self.head_dim, eps=qk_norm_eps) if qk_norm else None
+        self.q_norm = (
+            ActionExpertRMSNorm(self.head_dim, eps=qk_norm_eps) if qk_norm else None
+        )
+        self.k_norm = (
+            ActionExpertRMSNorm(self.head_dim, eps=qk_norm_eps) if qk_norm else None
+        )
         self.q_proj = nn.Linear(hidden_size, hidden_size)
         self.kv_proj = nn.Linear(hidden_size, hidden_size * 2)
         self.out_proj = nn.Linear(hidden_size, hidden_size)
         self.out_drop = nn.Dropout(proj_dropout)
 
-    def _apply_qk_norm(self, q: torch.Tensor, k: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _apply_qk_norm(
+        self, q: torch.Tensor, k: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         if self.q_norm is None or self.k_norm is None:
             return q, k
         return self.q_norm(q), self.k_norm(k)
@@ -259,7 +281,7 @@ class ActionExpertCrossAttention(nn.Module):
         k: torch.Tensor,
         v: torch.Tensor,
         *,
-        attn_mask: Optional[torch.Tensor] = None,
+        attn_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         dropout_p = self.attn_dropout if self.training else 0.0
         if attn_mask is None and q.is_cuda:
@@ -291,10 +313,10 @@ class ActionExpertCrossAttention(nn.Module):
         self,
         x: torch.Tensor,
         *,
-        kv: Optional[torch.Tensor] = None,
-        kv_k: Optional[torch.Tensor] = None,
-        kv_v: Optional[torch.Tensor] = None,
-        attn_mask: Optional[torch.Tensor] = None,
+        kv: torch.Tensor | None = None,
+        kv_k: torch.Tensor | None = None,
+        kv_v: torch.Tensor | None = None,
+        attn_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if (kv_k is None) != (kv_v is None):
             raise ValueError("kv_k and kv_v must both be provided or both be None.")
@@ -309,7 +331,9 @@ class ActionExpertCrossAttention(nn.Module):
             if kv is None:
                 raise ValueError("cross-attention requires kv or kv_k/kv_v.")
             src_len = kv.shape[1]
-            kv_proj = self.kv_proj(kv).view(bsz, src_len, 2, self.num_heads, self.head_dim)
+            kv_proj = self.kv_proj(kv).view(
+                bsz, src_len, 2, self.num_heads, self.head_dim
+            )
             k = kv_proj[:, :, 0]
             v = kv_proj[:, :, 1]
 
@@ -405,11 +429,12 @@ class ActionExpertBlock(nn.Module):
         x: torch.Tensor,
         conditioning: torch.Tensor,
         *,
-        cross_context: Optional[torch.Tensor] = None,
-        cross_kv: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
-        self_attn_mask: Optional[torch.Tensor] = None,
-        attn_mask: Optional[torch.Tensor] = None,
+        cross_context: torch.Tensor | None = None,
+        cross_kv: tuple[torch.Tensor, torch.Tensor] | None = None,
+        self_attn_mask: torch.Tensor | None = None,
+        attn_mask: torch.Tensor | None = None,
         is_causal: bool = False,
+        prepared_modulation: tuple | None = None,
     ) -> torch.Tensor:
         (
             shift_msa,
@@ -421,7 +446,11 @@ class ActionExpertBlock(nn.Module):
             shift_mlp,
             scale_mlp,
             gate_mlp,
-        ) = self.modulation(conditioning).chunk(9, dim=1)
+        ) = (
+            self.modulation(conditioning).chunk(9, dim=1)
+            if prepared_modulation is None
+            else prepared_modulation
+        )
 
         x = x + gate_msa.unsqueeze(1) * self.self_attn(
             _modulate(self.self_norm(x), shift_msa, scale_msa),
@@ -456,8 +485,17 @@ class ActionExpertFinalLayer(nn.Module):
         self.modulation = ActionExpertModulation(hidden_size, 2)
         self.linear = nn.Linear(hidden_size, output_dim)
 
-    def forward(self, x: torch.Tensor, conditioning: torch.Tensor) -> torch.Tensor:
-        shift, scale = self.modulation(conditioning).chunk(2, dim=1)
+    def forward(
+        self,
+        x: torch.Tensor,
+        conditioning: torch.Tensor,
+        prepared_modulation: tuple | None = None,
+    ) -> torch.Tensor:
+        shift, scale = (
+            self.modulation(conditioning).chunk(2, dim=1)
+            if prepared_modulation is None
+            else prepared_modulation
+        )
         return self.linear(_modulate(self.norm(x), shift, scale))
 
 
@@ -500,14 +538,14 @@ class ActionExpertConfig(BaseConfig):
     rope: bool = True
     rope_on_cross_attention: bool = False
     causal_attn: bool = False
-    compile: Optional[str] = "blocks"
+    compile: str | None = "blocks"
 
     def build(
         self,
         llm_dim: int,
-        llm_kv_dim: Optional[int] = None,
-        llm_num_kv_heads: Optional[int] = None,
-        llm_num_layers: Optional[int] = None,
+        llm_kv_dim: int | None = None,
+        llm_num_kv_heads: int | None = None,
+        llm_num_layers: int | None = None,
         device=None,
     ) -> "ActionExpert":
         return ActionExpert(
@@ -531,7 +569,10 @@ class ActionExpertConfig(BaseConfig):
             del config["implementation"]
         if "action_dim" in config:
             legacy_dim = int(config["action_dim"])
-            if "max_action_dim" in config and int(config["max_action_dim"]) != legacy_dim:
+            if (
+                "max_action_dim" in config
+                and int(config["max_action_dim"]) != legacy_dim
+            ):
                 raise ValueError(
                     "Found conflicting action expert action dimensions in config: "
                     f"action_dim={legacy_dim} vs max_action_dim={int(config['max_action_dim'])}."
@@ -543,14 +584,42 @@ class ActionExpertConfig(BaseConfig):
         return config
 
 
+class _DeferredFiniteChecks:
+    """Keep every numerical guard on GPU; reject before publishing actions."""
+
+    def __init__(self):
+        self.flags = []
+        self.labels = []
+
+    def record(self, value, label):
+        self.flags.append(torch.isfinite(value).all())
+        self.labels.append(label)
+
+    def verify(self):
+        flags = torch.stack(self.flags)
+        if not bool(flags.all()):
+            bad = (~flags).nonzero().flatten().cpu().tolist()
+            labels = [self.labels[i] for i in bad[:12]]
+            raise RuntimeError(
+                f"Non-finite action inference values; no actions returned: {labels}"
+            )
+
+
+def _inference_finite(value, checks, label):
+    if checks is None:
+        return torch.isfinite(value).all()
+    checks.record(value, label)
+    return True
+
+
 class ActionExpert(nn.Module):
     def __init__(
         self,
         config: ActionExpertConfig,
         llm_dim: int,
-        llm_kv_dim: Optional[int] = None,
-        llm_num_kv_heads: Optional[int] = None,
-        llm_num_layers: Optional[int] = None,
+        llm_kv_dim: int | None = None,
+        llm_num_kv_heads: int | None = None,
+        llm_num_layers: int | None = None,
         device=None,
     ):
         super().__init__()
@@ -572,12 +641,22 @@ class ActionExpert(nn.Module):
             nn.Linear(config.hidden_size, config.hidden_size, device=device),
         )
 
-        self.action_embed = nn.Linear(config.max_action_dim, config.hidden_size, device=device)
-        self.state_encoder = nn.Linear(config.hidden_size, config.hidden_size, device=device)
-        self.state_norm = ActionExpertRMSNorm(config.hidden_size, eps=1e-6, device=device)
+        self.action_embed = nn.Linear(
+            config.max_action_dim, config.hidden_size, device=device
+        )
+        self.state_encoder = nn.Linear(
+            config.hidden_size, config.hidden_size, device=device
+        )
+        self.state_norm = ActionExpertRMSNorm(
+            config.hidden_size, eps=1e-6, device=device
+        )
 
-        self.context_k_proj = nn.Linear(self.llm_kv_dim, config.hidden_size, bias=False, device=device)
-        self.context_v_proj = nn.Linear(self.llm_kv_dim, config.hidden_size, bias=False, device=device)
+        self.context_k_proj = nn.Linear(
+            self.llm_kv_dim, config.hidden_size, bias=False, device=device
+        )
+        self.context_v_proj = nn.Linear(
+            self.llm_kv_dim, config.hidden_size, bias=False, device=device
+        )
 
         self.context_norm = (
             ActionExpertRMSNorm(config.hidden_size, eps=1e-6)
@@ -607,11 +686,15 @@ class ActionExpert(nn.Module):
                 if block.cross_attn.kv_proj.bias is not None:
                     block.cross_attn.kv_proj.bias.requires_grad = False
 
-        self.final_layer = ActionExpertFinalLayer(config.hidden_size, config.max_action_dim)
+        self.final_layer = ActionExpertFinalLayer(
+            config.hidden_size, config.max_action_dim
+        )
         self.reset_parameters()
 
     def _reshape_hidden_to_heads(self, x: torch.Tensor) -> torch.Tensor:
-        return x.view(x.shape[0], x.shape[1], self.config.num_heads, self.action_head_dim)
+        return x.view(
+            x.shape[0], x.shape[1], self.config.num_heads, self.action_head_dim
+        )
 
     def _flatten_heads(self, x: torch.Tensor) -> torch.Tensor:
         return x.reshape(x.shape[0], x.shape[1], self.hidden_size)
@@ -655,7 +738,9 @@ class ActionExpert(nn.Module):
         _init_linear(self.final_layer.modulation.linear, zero=True)
         _init_linear(self.final_layer.linear, zero=True)
 
-    def prepare_state_dict_for_loading(self, state_dict: dict[str, torch.Tensor], prefix: str = "") -> int:
+    def prepare_state_dict_for_loading(
+        self, state_dict: dict[str, torch.Tensor], prefix: str = ""
+    ) -> int:
         """Add cleaned-code compatibility keys that older MolmoAct2 checkpoints do not contain."""
         added = 0
 
@@ -677,12 +762,16 @@ class ActionExpert(nn.Module):
 
         state_encoder_weight_key = f"{prefix}state_encoder.weight"
         if state_encoder_weight_key not in state_dict:
-            state_dict[state_encoder_weight_key] = torch.eye(hidden_size, dtype=dtype, device=device)
+            state_dict[state_encoder_weight_key] = torch.eye(
+                hidden_size, dtype=dtype, device=device
+            )
             added += 1
 
         state_encoder_bias_key = f"{prefix}state_encoder.bias"
         if state_encoder_bias_key not in state_dict:
-            state_dict[state_encoder_bias_key] = torch.zeros(hidden_size, dtype=dtype, device=device)
+            state_dict[state_encoder_bias_key] = torch.zeros(
+                hidden_size, dtype=dtype, device=device
+            )
             added += 1
 
         # Under the single supported kv_cache conditioning path, projected K/V tensors
@@ -691,7 +780,11 @@ class ActionExpert(nn.Module):
         for layer_idx in range(len(self.blocks)):
             q_proj_key = f"{prefix}blocks.{layer_idx}.cross_attn.q_proj.weight"
             q_proj = state_dict.get(q_proj_key)
-            layer_hidden_size = int(q_proj.shape[0]) if isinstance(q_proj, torch.Tensor) else hidden_size
+            layer_hidden_size = (
+                int(q_proj.shape[0])
+                if isinstance(q_proj, torch.Tensor)
+                else hidden_size
+            )
             layer_dtype = q_proj.dtype if isinstance(q_proj, torch.Tensor) else dtype
             layer_device = q_proj.device if isinstance(q_proj, torch.Tensor) else device
 
@@ -727,8 +820,8 @@ class ActionExpert(nn.Module):
 
     def _encode_states(
         self,
-        states: Optional[torch.Tensor],
-    ) -> Optional[torch.Tensor]:
+        states: torch.Tensor | None,
+    ) -> torch.Tensor | None:
         if states is None:
             return None
         if states.dim() == 2:
@@ -748,13 +841,20 @@ class ActionExpert(nn.Module):
 
     def _prepare_kv_context(
         self,
-        encoder_kv_states: Sequence[Tuple[torch.Tensor, torch.Tensor]],
-        encoded_states: Optional[torch.Tensor],
-    ) -> Sequence[Tuple[torch.Tensor, torch.Tensor]]:
+        encoder_kv_states: Sequence[tuple[torch.Tensor, torch.Tensor]],
+        encoded_states: torch.Tensor | None,
+        finite_checks: _DeferredFiniteChecks | None = None,
+    ) -> Sequence[tuple[torch.Tensor, torch.Tensor]]:
         if self.context_k_proj is None or self.context_v_proj is None:
-            raise RuntimeError("KV conditioning requested but KV projection modules are not initialized.")
+            raise RuntimeError(
+                "KV conditioning requested but KV projection modules are not initialized."
+            )
         kv_contexts = []
-        state_heads = self._reshape_hidden_to_heads(encoded_states) if encoded_states is not None else None
+        state_heads = (
+            self._reshape_hidden_to_heads(encoded_states)
+            if encoded_states is not None
+            else None
+        )
 
         if len(encoder_kv_states) != len(self.blocks):
             raise ValueError(
@@ -763,7 +863,11 @@ class ActionExpert(nn.Module):
             )
 
         for layer_idx, (k_in, v_in) in enumerate(encoder_kv_states):
-            if not torch.isfinite(k_in).all() or not torch.isfinite(v_in).all():
+            if not _inference_finite(
+                k_in, finite_checks, f"context_{layer_idx}_k_in"
+            ) or not _inference_finite(
+                v_in, finite_checks, f"context_{layer_idx}_v_in"
+            ):
                 raise RuntimeError(
                     "Non-finite encoder KV states before action expert projection: "
                     f"layer_idx={layer_idx}, "
@@ -776,7 +880,11 @@ class ActionExpert(nn.Module):
                 )
             k_ctx = self._project_kv_tensor(k_in, self.context_k_proj)
             v_ctx = self._project_kv_tensor(v_in, self.context_v_proj)
-            if not torch.isfinite(k_ctx).all() or not torch.isfinite(v_ctx).all():
+            if not _inference_finite(
+                k_ctx, finite_checks, f"context_{layer_idx}_k_ctx"
+            ) or not _inference_finite(
+                v_ctx, finite_checks, f"context_{layer_idx}_v_ctx"
+            ):
                 raise RuntimeError(
                     "Non-finite projected KV context in action expert: "
                     f"layer_idx={layer_idx}, "
@@ -797,11 +905,11 @@ class ActionExpert(nn.Module):
 
     def _build_cross_attention_mask(
         self,
-        encoder_attention_mask: Optional[torch.Tensor],
-        encoded_states: Optional[torch.Tensor],
+        encoder_attention_mask: torch.Tensor | None,
+        encoded_states: torch.Tensor | None,
         batch_size: int,
         dtype: torch.dtype,
-    ) -> Optional[torch.Tensor]:
+    ) -> torch.Tensor | None:
         state_seq_len = 0 if encoded_states is None else encoded_states.shape[1]
         if encoder_attention_mask is None and state_seq_len == 0:
             return None
@@ -825,11 +933,11 @@ class ActionExpert(nn.Module):
 
     def _build_self_attention_mask(
         self,
-        action_attention_mask: Optional[torch.Tensor],
+        action_attention_mask: torch.Tensor | None,
         seq_len: int,
         device: torch.device,
         dtype: torch.dtype,
-    ) -> Optional[torch.Tensor]:
+    ) -> torch.Tensor | None:
         mask = None
         if action_attention_mask is not None:
             valid = action_attention_mask.to(device=device, dtype=torch.bool)
@@ -840,24 +948,144 @@ class ActionExpert(nn.Module):
             key_mask = (~valid)[:, None, None, :].to(dtype=dtype)
             mask = key_mask * torch.finfo(dtype).min
         if self.config.causal_attn:
-            causal = torch.ones(seq_len, seq_len, device=device, dtype=torch.bool).triu(diagonal=1)
-            causal = causal.unsqueeze(0).unsqueeze(0).to(dtype=dtype) * torch.finfo(dtype).min
+            causal = torch.ones(seq_len, seq_len, device=device, dtype=torch.bool).triu(
+                diagonal=1
+            )
+            causal = (
+                causal.unsqueeze(0).unsqueeze(0).to(dtype=dtype)
+                * torch.finfo(dtype).min
+            )
             mask = causal if mask is None else (mask + causal)
         return mask
+
+    def prepare_inference_context(
+        self,
+        encoder_kv_states,
+        encoder_attention_mask,
+        state_embeddings,
+        batch_size,
+        seq_len,
+        device,
+        dtype,
+        finite_checks=None,
+    ):
+        if self.training or torch.is_grad_enabled():
+            raise RuntimeError("Prepared action context is eval/no-grad inference only")
+        encoded = self._encode_states(state_embeddings)
+        if encoded is not None and not _inference_finite(
+            encoded, finite_checks, "encoded_state"
+        ):
+            raise RuntimeError("Non-finite encoded state; no actions returned")
+        return {
+            "kv": self._prepare_kv_context(
+                encoder_kv_states, encoded, finite_checks=finite_checks
+            ),
+            "cross_mask": self._build_cross_attention_mask(
+                encoder_attention_mask, encoded, batch_size, dtype
+            ),
+            "self_mask": self._build_self_attention_mask(None, seq_len, device, dtype),
+            "dtype": dtype,
+        }
+
+    def inference_modulations(self, steps, batch_size, device, dtype):
+        if self.training or torch.is_grad_enabled():
+            raise RuntimeError("Modulation cache is eval/no-grad inference only")
+        modules = [self.time_embed, self.final_layer.modulation]
+        modules.extend(block.modulation for block in self.blocks)
+        versions = tuple(
+            (id(p), p._version, p.dtype, p.device)
+            for module in modules
+            for p in module.parameters()
+        )
+        key = (steps, batch_size, device, dtype, torch.get_default_dtype(), versions)
+        if getattr(self, "_inference_modulation_key", None) == key:
+            return self._inference_modulation_values
+        values = []
+        for index in range(steps):
+            time = torch.full((batch_size,), index / steps, device=device)
+            condition = self.time_embed(time)
+            blocks = tuple(
+                block.modulation(condition).chunk(9, dim=1) for block in self.blocks
+            )
+            final = self.final_layer.modulation(condition).chunk(2, dim=1)
+            values.append((condition, blocks, final))
+        self._inference_modulation_key = key
+        self._inference_modulation_values = tuple(values)
+        return self._inference_modulation_values
+
+    def _forward_prepared(
+        self,
+        actions,
+        timesteps,
+        prepared_context,
+        step_modulations=None,
+        finite_checks=None,
+    ):
+        if self.training or torch.is_grad_enabled():
+            raise RuntimeError("Prepared action forward is eval/no-grad inference only")
+        conditioning = (
+            self.time_embed(timesteps)
+            if step_modulations is None
+            else step_modulations[0]
+        )
+        if not _inference_finite(conditioning, finite_checks, "time_embedding"):
+            raise RuntimeError("Non-finite timestep embedding; no actions returned")
+        x = self.action_embed(actions)
+        if x.dtype != prepared_context["dtype"]:
+            raise RuntimeError("Prepared action context precision mismatch")
+        if not _inference_finite(x, finite_checks, "action_embedding"):
+            raise RuntimeError("Non-finite action embedding; no actions returned")
+        for index, (block, kv) in enumerate(zip(self.blocks, prepared_context["kv"])):
+            x = block(
+                x,
+                conditioning,
+                cross_kv=kv,
+                self_attn_mask=prepared_context["self_mask"],
+                attn_mask=prepared_context["cross_mask"],
+                is_causal=self.config.causal_attn,
+                prepared_modulation=None
+                if step_modulations is None
+                else step_modulations[1][index],
+            )
+            if not _inference_finite(x, finite_checks, f"block_{index}"):
+                raise RuntimeError(
+                    f"Non-finite action expert block {index}; no actions returned"
+                )
+        output = self.final_layer(
+            x,
+            conditioning,
+            prepared_modulation=None
+            if step_modulations is None
+            else step_modulations[2],
+        )
+        if not _inference_finite(output, finite_checks, "expert_output"):
+            raise RuntimeError("Non-finite action expert output; no actions returned")
+        return output
 
     def forward(
         self,
         actions: torch.Tensor,
         timesteps: torch.Tensor,
-        encoder_kv_states: Optional[Sequence[Tuple[torch.Tensor, torch.Tensor]]] = None,
-        encoder_attention_mask: Optional[torch.Tensor] = None,
-        action_attention_mask: Optional[torch.Tensor] = None,
-        state_embeddings: Optional[torch.Tensor] = None,
+        encoder_kv_states: Sequence[tuple[torch.Tensor, torch.Tensor]] | None = None,
+        encoder_attention_mask: torch.Tensor | None = None,
+        action_attention_mask: torch.Tensor | None = None,
+        state_embeddings: torch.Tensor | None = None,
+        prepared_context: dict | None = None,
+        step_modulations: tuple | None = None,
+        finite_checks: _DeferredFiniteChecks | None = None,
     ) -> torch.Tensor:
+        if prepared_context is not None:
+            return self._forward_prepared(
+                actions, timesteps, prepared_context, step_modulations, finite_checks
+            )
         if encoder_kv_states is None:
-            raise ValueError("Provide encoder_kv_states for MolmoAct2 action expert conditioning.")
+            raise ValueError(
+                "Provide encoder_kv_states for MolmoAct2 action expert conditioning."
+            )
         if len(encoder_kv_states) == 0:
-            raise ValueError("Expected at least one encoder kv state for action expert conditioning")
+            raise ValueError(
+                "Expected at least one encoder kv state for action expert conditioning"
+            )
         bsz, seq_len, _ = actions.shape
         if seq_len > self.config.max_horizon:
             raise ValueError(
@@ -894,7 +1122,9 @@ class ActionExpert(nn.Module):
         conditioning = timestep_embed
         valid_action = None
         if action_attention_mask is not None:
-            valid_action = action_attention_mask.to(device=x.device, dtype=x.dtype).unsqueeze(-1)
+            valid_action = action_attention_mask.to(
+                device=x.device, dtype=x.dtype
+            ).unsqueeze(-1)
             x = x * valid_action
             if not torch.isfinite(x).all():
                 raise RuntimeError(
@@ -969,7 +1199,9 @@ class ActionExpert(nn.Module):
         return
 
     def apply_activation_checkpointing(self):
-        self.blocks = nn.ModuleList([checkpoint_wrapper(block) for block in self.blocks])
+        self.blocks = nn.ModuleList(
+            [checkpoint_wrapper(block) for block in self.blocks]
+        )
 
     def apply_compile(self, **compile_kwargs):
         if self.config.compile == "blocks":

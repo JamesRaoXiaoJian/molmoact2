@@ -2,26 +2,20 @@ import dataclasses
 import logging
 import math
 import re
+from collections.abc import Iterator, Sequence
 from dataclasses import field
 from typing import (
     ClassVar,
-    List,
-    Optional,
-    Sequence,
-    Tuple,
-    Iterator,
 )
 
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
-from olmo.nn.tactile_config import TactileConfig
-from olmo.nn.tactile_encoder import TactileEncoder
-from olmo.preprocessing.tactile_preprocessor import TactileExamplePreprocessor
+from torch import nn
 from torch.distributions import Beta
 
-from olmo import tokenizer as tok
 from olmo.config import D
+from olmo.data.dynamic_packer import EXAMPLE_SUBSEGMENT_INCREMENT
+from olmo.data.robot_processing import RobotProcessorConfig
 from olmo.extra_tokens import (
     ACTION_END_TOKEN,
     ACTION_START_TOKEN,
@@ -29,13 +23,13 @@ from olmo.extra_tokens import (
     DEPTH_TOKENS,
 )
 from olmo.models.model import OLMoOutput
-from olmo.data.dynamic_packer import EXAMPLE_SUBSEGMENT_INCREMENT
 from olmo.models.molmo2.molmo2 import Molmo2, Molmo2Config
 from olmo.nn.action_expert import ActionExpert, ActionExpertConfig
-from olmo.data.robot_processing import RobotProcessorConfig
+from olmo.nn.tactile_config import TactileConfig
+from olmo.nn.tactile_encoder import TactileEncoder
 from olmo.preprocessing.multimodal_collator import MMCollator
+from olmo.preprocessing.tactile_preprocessor import TactileExamplePreprocessor
 from olmo.tokenizer import get_special_token_ids
-
 
 log = logging.getLogger(__name__)
 
@@ -51,7 +45,9 @@ def _sample_beta_timesteps(
 ) -> torch.Tensor:
     """Sample timesteps using a beta distribution with bounded support."""
     if cutoff < time_offset:
-        raise ValueError(f"flow-matching cutoff must be >= time_offset, got {cutoff} < {time_offset}")
+        raise ValueError(
+            f"flow-matching cutoff must be >= time_offset, got {cutoff} < {time_offset}"
+        )
     if time_scale <= 0:
         raise ValueError(f"flow-matching time_scale must be > 0, got {time_scale}")
     upper = min(cutoff, time_offset + time_scale)
@@ -62,7 +58,9 @@ def _sample_beta_timesteps(
     scale = upper - time_offset
     samples = dist.sample((batch_size,))
     if scale == 0:
-        return torch.full((batch_size,), time_offset, device=device, dtype=samples.dtype)
+        return torch.full(
+            (batch_size,), time_offset, device=device, dtype=samples.dtype
+        )
     return time_offset + scale * samples
 
 
@@ -78,7 +76,7 @@ class MolmoAct2Config(Molmo2Config):
     action_horizon: int = 30
     """Number of action steps predicted by the policy."""
 
-    n_action_steps: Optional[int] = None
+    n_action_steps: int | None = None
     """Deprecated checkpoint field. Inference defaults now come from per-tag metadata."""
 
     n_obs_steps: int = 1
@@ -135,7 +133,7 @@ class MolmoAct2Config(Molmo2Config):
     depth_code_input_noise_rate: float = 0.0
     """Training-only fraction of teacher-forced depth code tokens replaced with random depth codes."""
 
-    robot_processor: Optional[RobotProcessorConfig] = None
+    robot_processor: RobotProcessorConfig | None = None
     """Shared normalization pipeline used to normalize/unnormalize actions and states."""
 
     @classmethod
@@ -143,7 +141,10 @@ class MolmoAct2Config(Molmo2Config):
         config = super().update_legacy_settings(config)
         if "action_dim" in config:
             legacy_dim = int(config["action_dim"])
-            if "max_action_dim" in config and int(config["max_action_dim"]) != legacy_dim:
+            if (
+                "max_action_dim" in config
+                and int(config["max_action_dim"]) != legacy_dim
+            ):
                 raise ValueError(
                     "Found conflicting MolmoAct2 action dimensions in config: "
                     f"action_dim={legacy_dim} vs max_action_dim={int(config['max_action_dim'])}."
@@ -151,7 +152,9 @@ class MolmoAct2Config(Molmo2Config):
             config["max_action_dim"] = legacy_dim
             del config["action_dim"]
         if "action_expert" in config and config.action_expert is not None:
-            config.action_expert = ActionExpertConfig.update_legacy_settings(config.action_expert)
+            config.action_expert = ActionExpertConfig.update_legacy_settings(
+                config.action_expert
+            )
         if "action_expert_layer_mode" in config:
             value = str(config["action_expert_layer_mode"])
             if value != "per_layer":
@@ -171,14 +174,19 @@ class MolmoAct2Config(Molmo2Config):
         if "robot_processor" not in config:
             if "robot_preprocessor" in config and config.robot_preprocessor is not None:
                 config.robot_processor = config.robot_preprocessor
-            elif "robot_postprocessor" in config and config.robot_postprocessor is not None:
+            elif (
+                "robot_postprocessor" in config
+                and config.robot_postprocessor is not None
+            ):
                 config.robot_processor = config.robot_postprocessor
         if "robot_preprocessor" in config:
             del config["robot_preprocessor"]
         if "robot_postprocessor" in config:
             del config["robot_postprocessor"]
         if "robot_processor" in config and config.robot_processor is not None:
-            config.robot_processor = RobotProcessorConfig.update_legacy_settings(config.robot_processor)
+            config.robot_processor = RobotProcessorConfig.update_legacy_settings(
+                config.robot_processor
+            )
         if "progress_token_value_encoding" in config:
             del config["progress_token_value_encoding"]
         if "progress_token_value_encoding_scale" in config:
@@ -194,7 +202,9 @@ class MolmoAct2Config(Molmo2Config):
             return TactileExamplePreprocessor(base, self.tactile, self.n_obs_steps)
         return base
 
-    def build_collator(self, output_shapes, pad_mode: str, include_metadata=True) -> MMCollator:
+    def build_collator(
+        self, output_shapes, pad_mode: str, include_metadata=True
+    ) -> MMCollator:
         return MMCollator(
             get_special_token_ids(self.build_tokenizer()),
             output_shapes,
@@ -212,7 +222,8 @@ class MolmoAct2(Molmo2):
         super().__init__(config, device)
         self.tactile_encoder = (
             TactileEncoder(config.tactile, config.llm.d_model).to(device=device)
-            if config.tactile is not None and config.tactile.independent else None
+            if config.tactile is not None and config.tactile.independent
+            else None
         )
         valid_action_formats = {"continuous", "discrete", "both"}
         if config.action_format not in valid_action_formats:
@@ -236,9 +247,16 @@ class MolmoAct2(Molmo2):
                 f"got {config.depth_code_input_noise_rate}."
             )
         if config.action_expert_depth_gate and not config.add_action_expert:
-            raise ValueError("action_expert_depth_gate requires add_action_expert=True.")
-        if config.action_expert_depth_gate_per_layer and not config.action_expert_depth_gate:
-            raise ValueError("action_expert_depth_gate_per_layer requires action_expert_depth_gate=True.")
+            raise ValueError(
+                "action_expert_depth_gate requires add_action_expert=True."
+            )
+        if (
+            config.action_expert_depth_gate_per_layer
+            and not config.action_expert_depth_gate
+        ):
+            raise ValueError(
+                "action_expert_depth_gate_per_layer requires action_expert_depth_gate=True."
+            )
         if config.flow_matching_time_offset > config.flow_matching_cutoff:
             raise ValueError(
                 "flow_matching_time_offset must be <= flow_matching_cutoff "
@@ -249,10 +267,10 @@ class MolmoAct2(Molmo2):
                 "flow_matching_time_scale must be > 0 "
                 f"(got {config.flow_matching_time_scale})."
             )
-        self._action_start_token_id: Optional[int] = None
-        self._action_end_token_id: Optional[int] = None
-        self._eos_token_id: Optional[int] = None
-        self._depth_gate_token_ids: Tuple[int, ...] = ()
+        self._action_start_token_id: int | None = None
+        self._action_end_token_id: int | None = None
+        self._eos_token_id: int | None = None
+        self._depth_gate_token_ids: tuple[int, ...] = ()
         if config.action_format == "both":
             tokenizer = self.config.build_tokenizer()
             action_start_ids = tokenizer.encode(ACTION_START_TOKEN)
@@ -277,9 +295,10 @@ class MolmoAct2(Molmo2):
             self._depth_gate_token_ids = self._resolve_depth_gate_token_ids()
         if config.action_expert.max_action_dim != config.max_action_dim:
             config.action_expert.max_action_dim = config.max_action_dim
-        if config.action_expert.max_horizon < config.action_horizon:
-            config.action_expert.max_horizon = config.action_horizon
-        self.action_expert: Optional[ActionExpert]
+        config.action_expert.max_horizon = max(
+            config.action_expert.max_horizon, config.action_horizon
+        )
+        self.action_expert: ActionExpert | None
         if config.add_action_expert:
             if config.action_expert.num_layers != self.config.llm.n_layers:
                 raise ValueError(
@@ -301,7 +320,7 @@ class MolmoAct2(Molmo2):
             )
         else:
             self.action_expert = None
-        self.action_expert_depth_gate: Optional[nn.Module]
+        self.action_expert_depth_gate: nn.Module | None
         if config.action_expert_depth_gate:
             gate_input_dim = llm_kv_dim
             if config.action_expert_depth_gate_per_layer:
@@ -311,7 +330,9 @@ class MolmoAct2(Molmo2):
                     for _ in range(num_gate_layers)
                 )
             else:
-                self.action_expert_depth_gate = nn.Linear(gate_input_dim, 1).to(device=device)
+                self.action_expert_depth_gate = nn.Linear(gate_input_dim, 1).to(
+                    device=device
+                )
             self.reset_action_expert_depth_gate_parameters()
         else:
             self.action_expert_depth_gate = None
@@ -326,15 +347,19 @@ class MolmoAct2(Molmo2):
         )
         for gate in gates:
             if not isinstance(gate, nn.Linear):
-                raise TypeError(f"Expected depth gate to be nn.Linear, got {type(gate).__name__}.")
+                raise TypeError(
+                    f"Expected depth gate to be nn.Linear, got {type(gate).__name__}."
+                )
             nn.init.zeros_(gate.weight)
             nn.init.constant_(
                 gate.bias,
                 float(self.config.action_expert_depth_gate_init_bias),
             )
 
-    def _resolve_depth_gate_token_ids(self) -> Tuple[int, ...]:
-        added_tokens = list(self.config.llm.tokenizer.resolve_new_tokens_for_both_input_and_output())
+    def _resolve_depth_gate_token_ids(self) -> tuple[int, ...]:
+        added_tokens = list(
+            self.config.llm.tokenizer.resolve_new_tokens_for_both_input_and_output()
+        )
         depth_tokens = [DEPTH_OUTPUT_TOKEN]
         depth_tokens.extend(
             token
@@ -372,48 +397,54 @@ class MolmoAct2(Molmo2):
     def forward(
         self,
         input_ids: torch.LongTensor,
-        input_embeddings: Optional[torch.FloatTensor] = None,
-        attention_mask: Optional[torch.Tensor] = None,
-        attention_bias: Optional[torch.Tensor] = None,
-        response_mask: Optional[torch.Tensor] = None,
-        subsegment_ids: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.Tensor] = None,
-        labels: Optional[torch.LongTensor] = None,
-        loss_masks: Optional[torch.Tensor] = None,
-        images: Optional[torch.Tensor] = None,
-        image_masks: Optional[torch.Tensor] = None,
-        token_pooling: Optional[torch.Tensor] = None,
-        low_res_token_pooling: Optional[torch.Tensor] = None,
-        num_images: Optional[torch.Tensor] = None,
-        multimodal_type: Optional[torch.Tensor] = None,
-        num_image_starts: Optional[torch.Tensor] = None,
+        input_embeddings: torch.FloatTensor | None = None,
+        attention_mask: torch.Tensor | None = None,
+        attention_bias: torch.Tensor | None = None,
+        response_mask: torch.Tensor | None = None,
+        subsegment_ids: torch.Tensor | None = None,
+        position_ids: torch.Tensor | None = None,
+        labels: torch.LongTensor | None = None,
+        loss_masks: torch.Tensor | None = None,
+        images: torch.Tensor | None = None,
+        image_masks: torch.Tensor | None = None,
+        token_pooling: torch.Tensor | None = None,
+        low_res_token_pooling: torch.Tensor | None = None,
+        num_images: torch.Tensor | None = None,
+        multimodal_type: torch.Tensor | None = None,
+        num_image_starts: torch.Tensor | None = None,
         response_logits_only: bool = False,
-        past_key_values: Optional[Sequence[Tuple[torch.Tensor, torch.Tensor]]] = None,
+        past_key_values: Sequence[tuple[torch.Tensor, torch.Tensor]] | None = None,
         use_cache: bool = False,
         last_logits_only: bool = False,
-        output_hidden_states: Optional[bool] = None,
-        append_last_valid_logits: Optional[torch.Tensor] = None,
+        output_hidden_states: bool | None = None,
+        append_last_valid_logits: torch.Tensor | None = None,
         collect_layer_hidden_states: bool = False,
-        states: Optional[torch.Tensor] = None,
-        actions: Optional[torch.Tensor] = None,
-        action_horizon_is_pad: Optional[torch.Tensor] = None,
-        action_is_pad: Optional[torch.Tensor] = None,
-        action_dim_is_pad: Optional[torch.Tensor] = None,
-        packed_batch_idx: Optional[torch.Tensor] = None,
-        packed_example_ids: Optional[torch.Tensor] = None,
-        packed_action_chunk_is_valid: Optional[torch.Tensor] = None,
-        packed_num_chunks: Optional[torch.Tensor] = None,
-        packed_action_chunk_cap: Optional[torch.Tensor] = None,
-        packed_action_chunk_overflow: Optional[torch.Tensor] = None,
+        states: torch.Tensor | None = None,
+        actions: torch.Tensor | None = None,
+        action_horizon_is_pad: torch.Tensor | None = None,
+        action_is_pad: torch.Tensor | None = None,
+        action_dim_is_pad: torch.Tensor | None = None,
+        packed_batch_idx: torch.Tensor | None = None,
+        packed_example_ids: torch.Tensor | None = None,
+        packed_action_chunk_is_valid: torch.Tensor | None = None,
+        packed_num_chunks: torch.Tensor | None = None,
+        packed_action_chunk_cap: torch.Tensor | None = None,
+        packed_action_chunk_overflow: torch.Tensor | None = None,
         tactile_images: torch.Tensor | None = None,
         tactile_token_mask: torch.Tensor | None = None,
     ) -> OLMoOutput:
         """Run the base VLM and (optionally) compute the action loss."""
-        output_hidden_states = output_hidden_states if output_hidden_states is not None else False
+        output_hidden_states = (
+            output_hidden_states if output_hidden_states is not None else False
+        )
         if action_horizon_is_pad is not None and action_is_pad is not None:
-            raise ValueError("Provide only one of action_horizon_is_pad or legacy action_is_pad.")
+            raise ValueError(
+                "Provide only one of action_horizon_is_pad or legacy action_is_pad."
+            )
         resolved_action_horizon_is_pad = (
-            action_horizon_is_pad if action_horizon_is_pad is not None else action_is_pad
+            action_horizon_is_pad
+            if action_horizon_is_pad is not None
+            else action_is_pad
         )
         if actions is not None:
             self._require_action_expert()
@@ -434,33 +465,33 @@ class MolmoAct2(Molmo2):
         collect_layer_input_states = False
         collect_block_output_states = collect_layer_states
         collect_layer_kv = actions is not None
-        forward_kwargs = dict(
-            input_ids=input_ids,
-            tactile_images=tactile_images,
-            tactile_token_mask=tactile_token_mask,
-            input_embeddings=input_embeddings,
-            attention_mask=attention_mask,
-            attention_bias=attention_bias,
-            response_mask=response_mask,
-            subsegment_ids=subsegment_ids,
-            position_ids=position_ids,
-            labels=labels,
-            loss_masks=loss_masks,
-            images=images,
-            image_masks=image_masks,
-            token_pooling=token_pooling,
-            low_res_token_pooling=low_res_token_pooling,
-            num_images=num_images,
-            multimodal_type=multimodal_type,
-            num_image_starts=num_image_starts,
-            response_logits_only=response_logits_only,
-            past_key_values=past_key_values,
-            use_cache=use_cache,
-            last_logits_only=last_logits_only,
-            append_last_valid_logits=append_last_valid_logits,
-        )
+        forward_kwargs = {
+            "input_ids": input_ids,
+            "tactile_images": tactile_images,
+            "tactile_token_mask": tactile_token_mask,
+            "input_embeddings": input_embeddings,
+            "attention_mask": attention_mask,
+            "attention_bias": attention_bias,
+            "response_mask": response_mask,
+            "subsegment_ids": subsegment_ids,
+            "position_ids": position_ids,
+            "labels": labels,
+            "loss_masks": loss_masks,
+            "images": images,
+            "image_masks": image_masks,
+            "token_pooling": token_pooling,
+            "low_res_token_pooling": low_res_token_pooling,
+            "num_images": num_images,
+            "multimodal_type": multimodal_type,
+            "num_image_starts": num_image_starts,
+            "response_logits_only": response_logits_only,
+            "past_key_values": past_key_values,
+            "use_cache": use_cache,
+            "last_logits_only": last_logits_only,
+            "append_last_valid_logits": append_last_valid_logits,
+        }
 
-        base_output, layer_states, layer_kv_states = self._run_backbone(
+        base_output, _layer_states, layer_kv_states = self._run_backbone(
             collect_layer_hidden_states=collect_block_output_states,
             collect_layer_kv_states=collect_layer_kv,
             collect_layer_input_states=collect_layer_input_states,
@@ -472,7 +503,9 @@ class MolmoAct2(Molmo2):
         internal = dict(base_output.internal or {})
 
         if actions is not None:
-            encoder_attention_mask = self._get_encoder_attention_mask(input_ids, attention_mask)
+            encoder_attention_mask = self._get_encoder_attention_mask(
+                input_ids, attention_mask
+            )
             if layer_kv_states is None:
                 raise RuntimeError("Layer KV states are required for action training.")
             selected_layer_states = None
@@ -511,7 +544,9 @@ class MolmoAct2(Molmo2):
             internal["action_flow_loss"] = flow_loss
             internal["action_velocity"] = velocity
             if depth_gate is not None:
-                metrics["action_expert_depth_gate"] = self._mean_depth_gate(depth_gate).detach()
+                metrics["action_expert_depth_gate"] = self._mean_depth_gate(
+                    depth_gate
+                ).detach()
                 internal["action_expert_depth_gate"] = depth_gate
 
         return base_output._replace(metrics=metrics, internal=internal)
@@ -519,33 +554,33 @@ class MolmoAct2(Molmo2):
     @torch.no_grad()
     def generate_actions(
         self,
-        input_ids: Optional[torch.LongTensor],
-        input_embeddings: Optional[torch.FloatTensor] = None,
-        attention_mask: Optional[torch.Tensor] = None,
-        attention_bias: Optional[torch.Tensor] = None,
-        response_mask: Optional[torch.Tensor] = None,
-        subsegment_ids: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.Tensor] = None,
-        labels: Optional[torch.LongTensor] = None,
-        loss_masks: Optional[torch.Tensor] = None,
-        images: Optional[torch.Tensor] = None,
-        image_masks: Optional[torch.Tensor] = None,
-        token_pooling: Optional[torch.Tensor] = None,
-        low_res_token_pooling: Optional[torch.Tensor] = None,
-        num_images: Optional[torch.Tensor] = None,
-        multimodal_type: Optional[torch.Tensor] = None,
-        num_image_starts: Optional[torch.Tensor] = None,
+        input_ids: torch.LongTensor | None,
+        input_embeddings: torch.FloatTensor | None = None,
+        attention_mask: torch.Tensor | None = None,
+        attention_bias: torch.Tensor | None = None,
+        response_mask: torch.Tensor | None = None,
+        subsegment_ids: torch.Tensor | None = None,
+        position_ids: torch.Tensor | None = None,
+        labels: torch.LongTensor | None = None,
+        loss_masks: torch.Tensor | None = None,
+        images: torch.Tensor | None = None,
+        image_masks: torch.Tensor | None = None,
+        token_pooling: torch.Tensor | None = None,
+        low_res_token_pooling: torch.Tensor | None = None,
+        num_images: torch.Tensor | None = None,
+        multimodal_type: torch.Tensor | None = None,
+        num_image_starts: torch.Tensor | None = None,
         response_logits_only: bool = False,
-        past_key_values: Optional[Sequence[Tuple[torch.Tensor, torch.Tensor]]] = None,
+        past_key_values: Sequence[tuple[torch.Tensor, torch.Tensor]] | None = None,
         use_cache: bool = False,
         last_logits_only: bool = False,
-        append_last_valid_logits: Optional[torch.Tensor] = None,
-        states: Optional[torch.Tensor] = None,
-        action_dim_is_pad: Optional[torch.Tensor] = None,
-        num_steps: Optional[int] = None,
-        generator: Optional[torch.Generator] = None,
-        encoder_kv_states: Optional[Sequence[Tuple[torch.Tensor, torch.Tensor]]] = None,
-        encoder_attention_mask: Optional[torch.Tensor] = None,
+        append_last_valid_logits: torch.Tensor | None = None,
+        states: torch.Tensor | None = None,
+        action_dim_is_pad: torch.Tensor | None = None,
+        num_steps: int | None = None,
+        generator: torch.Generator | None = None,
+        encoder_kv_states: Sequence[tuple[torch.Tensor, torch.Tensor]] | None = None,
+        encoder_attention_mask: torch.Tensor | None = None,
         tactile_images: torch.Tensor | None = None,
         tactile_token_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
@@ -560,36 +595,42 @@ class MolmoAct2(Molmo2):
             layer_kv_states = self._select_layer_kv_states(encoder_kv_states)
             layer_states = None
             if encoder_attention_mask is None and input_ids is not None:
-                encoder_attention_mask = self._get_encoder_attention_mask(input_ids, attention_mask)
+                encoder_attention_mask = self._get_encoder_attention_mask(
+                    input_ids, attention_mask
+                )
         else:
             if input_ids is None:
-                raise ValueError("input_ids must be provided when encoder conditioning is not precomputed.")
-            encoder_attention_mask = self._get_encoder_attention_mask(input_ids, attention_mask)
-            forward_kwargs = dict(
-                input_ids=input_ids,
-                tactile_images=tactile_images,
-                tactile_token_mask=tactile_token_mask,
-                input_embeddings=input_embeddings,
-                attention_mask=attention_mask,
-                attention_bias=attention_bias,
-                response_mask=response_mask,
-                subsegment_ids=subsegment_ids,
-                position_ids=position_ids,
-                labels=labels,
-                loss_masks=loss_masks,
-                images=images,
-                image_masks=image_masks,
-                token_pooling=token_pooling,
-                low_res_token_pooling=low_res_token_pooling,
-                num_images=num_images,
-                multimodal_type=multimodal_type,
-                num_image_starts=num_image_starts,
-                response_logits_only=response_logits_only,
-                past_key_values=past_key_values,
-                use_cache=use_cache,
-                last_logits_only=last_logits_only,
-                append_last_valid_logits=append_last_valid_logits,
+                raise ValueError(
+                    "input_ids must be provided when encoder conditioning is not precomputed."
+                )
+            encoder_attention_mask = self._get_encoder_attention_mask(
+                input_ids, attention_mask
             )
+            forward_kwargs = {
+                "input_ids": input_ids,
+                "tactile_images": tactile_images,
+                "tactile_token_mask": tactile_token_mask,
+                "input_embeddings": input_embeddings,
+                "attention_mask": attention_mask,
+                "attention_bias": attention_bias,
+                "response_mask": response_mask,
+                "subsegment_ids": subsegment_ids,
+                "position_ids": position_ids,
+                "labels": labels,
+                "loss_masks": loss_masks,
+                "images": images,
+                "image_masks": image_masks,
+                "token_pooling": token_pooling,
+                "low_res_token_pooling": low_res_token_pooling,
+                "num_images": num_images,
+                "multimodal_type": multimodal_type,
+                "num_image_starts": num_image_starts,
+                "response_logits_only": response_logits_only,
+                "past_key_values": past_key_values,
+                "use_cache": use_cache,
+                "last_logits_only": last_logits_only,
+                "append_last_valid_logits": append_last_valid_logits,
+            }
             collect_layer_input_states = False
             _, layer_states, layer_kv_states = self._run_backbone(
                 collect_layer_hidden_states=False,
@@ -619,7 +660,9 @@ class MolmoAct2(Molmo2):
             depth_gate,
         )
         steps = num_steps or self.config.flow_matching_num_steps
-        sample_source = layer_states[0] if layer_states is not None else layer_kv_states[0][0]
+        sample_source = (
+            layer_states[0] if layer_states is not None else layer_kv_states[0][0]
+        )
         batch_size = sample_source.shape[0]
         device = sample_source.device
         trajectory = torch.randn(
@@ -637,6 +680,53 @@ class MolmoAct2(Molmo2):
             layer_states,
             layer_kv_states,
         )
+        mode = getattr(self, "native_inference_optimization", "baseline")
+        if mode not in {"baseline", "context", "deferred", "modcache", "graph"}:
+            raise ValueError(f"Unknown native inference optimization: {mode}")
+        prepared_context = None
+        finite_checks = None
+        modulations = None
+        if mode != "baseline":
+            from olmo.nn.action_expert import _DeferredFiniteChecks
+
+            if mode in {"deferred", "modcache", "graph"}:
+                finite_checks = _DeferredFiniteChecks()
+            dtype = (
+                torch.get_autocast_dtype(device.type)
+                if torch.is_autocast_enabled(device.type)
+                else action_expert.action_embed.weight.dtype
+            )
+            prepared_context = action_expert.prepare_inference_context(
+                layer_kv_states,
+                encoder_attention_mask,
+                states,
+                batch_size,
+                trajectory.shape[1],
+                device,
+                dtype,
+                finite_checks,
+            )
+            if mode in {"modcache", "graph"}:
+                modulations = action_expert.inference_modulations(
+                    steps, batch_size, device, dtype
+                )
+        if mode == "graph":
+            from olmo.nn.native_action_graph import NativeActionFlowGraph
+
+            finite_checks.verify()
+            manager = getattr(self, "_native_action_flow_graph", None)
+            if manager is None:
+                manager = NativeActionFlowGraph()
+                self._native_action_flow_graph = manager
+            return manager.run(
+                self,
+                action_expert,
+                trajectory,
+                prepared_context,
+                modulations,
+                action_dim_is_pad,
+                steps,
+            )
         for i in range(steps):
             t = torch.full((batch_size,), i / steps, device=device)
             trajectory = self._mask_action_dim_tensor(
@@ -644,15 +734,18 @@ class MolmoAct2(Molmo2):
                 action_dim_is_pad=action_dim_is_pad,
                 enabled=self.config.mask_action_dim_padding,
             )
-            action_expert_kwargs = dict(
-                encoder_kv_states=layer_kv_states,
-                encoder_attention_mask=encoder_attention_mask,
-                state_embeddings=states,
-            )
+            action_expert_kwargs = {
+                "encoder_kv_states": layer_kv_states,
+                "encoder_attention_mask": encoder_attention_mask,
+                "state_embeddings": states,
+            }
             velocity = action_expert(
                 trajectory,
                 t,
                 **action_expert_kwargs,
+                prepared_context=prepared_context,
+                finite_checks=finite_checks,
+                step_modulations=None if modulations is None else modulations[i],
             )
             velocity = self._mask_action_dim_tensor(
                 velocity,
@@ -665,6 +758,9 @@ class MolmoAct2(Molmo2):
                 action_dim_is_pad=action_dim_is_pad,
                 enabled=self.config.mask_action_dim_padding,
             )
+        if finite_checks is not None:
+            finite_checks.record(trajectory, "integrated_trajectory")
+            finite_checks.verify()
         return trajectory
 
     def _run_backbone(
@@ -674,24 +770,30 @@ class MolmoAct2(Molmo2):
         collect_layer_kv_states: bool,
         collect_layer_input_states: bool = False,
         **forward_kwargs,
-    ) -> Tuple[
+    ) -> tuple[
         OLMoOutput,
-        Optional[Sequence[torch.Tensor]],
-        Optional[Sequence[Tuple[torch.Tensor, torch.Tensor]]],
+        Sequence[torch.Tensor] | None,
+        Sequence[tuple[torch.Tensor, torch.Tensor]] | None,
     ]:
         kwargs = dict(forward_kwargs)
         tactile_images = kwargs.pop("tactile_images", None)
         tactile_mask = kwargs.pop("tactile_token_mask", None)
         if tactile_images is not None:
             if self.tactile_encoder is None or tactile_mask is None:
-                raise ValueError("Tactile pixels require an independent encoder and token mask.")
+                raise ValueError(
+                    "Tactile pixels require an independent encoder and token mask."
+                )
             kwargs["additional_token_embeddings"] = self.tactile_encoder(tactile_images)
             kwargs["additional_token_mask"] = tactile_mask
-        elif getattr(self, "tactile_encoder", None) is not None and not kwargs.get("past_key_values"):
+        elif getattr(self, "tactile_encoder", None) is not None and not kwargs.get(
+            "past_key_values"
+        ):
             raise ValueError("Independent tactile checkpoints require tactile_images.")
         kwargs["collect_layer_hidden_states"] = collect_layer_hidden_states
         kwargs["collect_layer_kv_states"] = collect_layer_kv_states
-        kwargs["output_hidden_states"] = output_hidden_states or collect_layer_input_states
+        kwargs["output_hidden_states"] = (
+            output_hidden_states or collect_layer_input_states
+        )
         original_use_cache = bool(kwargs.get("use_cache", False))
         base_output = super().forward(**kwargs)
         internal = dict(base_output.internal or {})
@@ -699,7 +801,9 @@ class MolmoAct2(Molmo2):
         if collect_layer_input_states:
             hidden_states = base_output.hidden_states
             if hidden_states is None:
-                raise RuntimeError("Backbone did not return hidden states for input-layer action conditioning.")
+                raise RuntimeError(
+                    "Backbone did not return hidden states for input-layer action conditioning."
+                )
             num_layers = len(self.transformer.blocks)
             if len(hidden_states) < num_layers:
                 raise RuntimeError(
@@ -707,22 +811,26 @@ class MolmoAct2(Molmo2):
                     f"got {len(hidden_states)}, expected at least {num_layers}."
                 )
             layer_states = tuple(hidden_states[: num_layers + 1])
-        layer_kv_states = base_output.attn_key_values if collect_layer_kv_states else None
+        layer_kv_states = (
+            base_output.attn_key_values if collect_layer_kv_states else None
+        )
         attn_key_values = base_output.attn_key_values if original_use_cache else None
         if not output_hidden_states:
             base_output = base_output._replace(hidden_states=None)
-        base_output = base_output._replace(internal=internal, attn_key_values=attn_key_values)
+        base_output = base_output._replace(
+            internal=internal, attn_key_values=attn_key_values
+        )
         return base_output, layer_states, layer_kv_states
 
     def _get_encoder_attention_mask(
         self,
-        input_ids: Optional[torch.Tensor],
-        attention_mask: Optional[torch.Tensor],
-    ) -> Optional[torch.Tensor]:
+        input_ids: torch.Tensor | None,
+        attention_mask: torch.Tensor | None,
+    ) -> torch.Tensor | None:
         if attention_mask is not None:
             mask = attention_mask.to(dtype=torch.bool).clone()
         elif input_ids is not None:
-            mask = (input_ids != -1)
+            mask = input_ids != -1
         else:
             return None
 
@@ -731,7 +839,7 @@ class MolmoAct2(Molmo2):
 
         eos_id = self._eos_token_id
         if eos_id is not None:
-            mask &= (input_ids != eos_id)
+            mask &= input_ids != eos_id
 
         for batch_idx in range(input_ids.shape[0]):
             row_ids = input_ids[batch_idx]
@@ -747,9 +855,9 @@ class MolmoAct2(Molmo2):
 
     def _get_depth_token_mask(
         self,
-        input_ids: Optional[torch.Tensor],
-        encoder_attention_mask: Optional[torch.Tensor] = None,
-    ) -> Optional[torch.Tensor]:
+        input_ids: torch.Tensor | None,
+        encoder_attention_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor | None:
         if not self.config.action_expert_depth_gate or input_ids is None:
             return None
         if not self._depth_gate_token_ids:
@@ -761,7 +869,9 @@ class MolmoAct2(Molmo2):
         )
         depth_mask = (input_ids.unsqueeze(-1) == depth_token_ids).any(dim=-1)
         if encoder_attention_mask is not None:
-            depth_mask = depth_mask & encoder_attention_mask.to(device=input_ids.device, dtype=torch.bool)
+            depth_mask = depth_mask & encoder_attention_mask.to(
+                device=input_ids.device, dtype=torch.bool
+            )
         return depth_mask
 
     def _depth_gate_from_source(
@@ -770,7 +880,7 @@ class MolmoAct2(Molmo2):
         *,
         source: torch.Tensor,
         depth_mask: torch.Tensor,
-        encoder_attention_mask: Optional[torch.Tensor],
+        encoder_attention_mask: torch.Tensor | None,
     ) -> torch.Tensor:
         if source.ndim == 4:
             source = source.reshape(source.shape[0], source.shape[1], -1)
@@ -784,9 +894,13 @@ class MolmoAct2(Molmo2):
                 f"condition={tuple(source.shape)}, depth_mask={tuple(depth_mask.shape)}."
             )
         if encoder_attention_mask is not None:
-            valid_mask = encoder_attention_mask.to(device=source.device, dtype=torch.bool)
+            valid_mask = encoder_attention_mask.to(
+                device=source.device, dtype=torch.bool
+            )
         else:
-            valid_mask = torch.ones(depth_mask.shape, device=source.device, dtype=torch.bool)
+            valid_mask = torch.ones(
+                depth_mask.shape, device=source.device, dtype=torch.bool
+            )
         depth_mask = depth_mask.to(device=source.device, dtype=torch.bool)
         pool_mask = valid_mask & ~depth_mask
         # If a packed/corner-case row contains only depth tokens, fall back to all valid tokens.
@@ -801,11 +915,11 @@ class MolmoAct2(Molmo2):
     def _depth_gate_from_condition(
         self,
         *,
-        input_ids: Optional[torch.Tensor],
-        encoder_attention_mask: Optional[torch.Tensor],
-        layer_states: Optional[Sequence[torch.Tensor]],
-        layer_kv_states: Optional[Sequence[Tuple[torch.Tensor, torch.Tensor]]],
-    ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor]]:
+        input_ids: torch.Tensor | None,
+        encoder_attention_mask: torch.Tensor | None,
+        layer_states: Sequence[torch.Tensor] | None,
+        layer_kv_states: Sequence[tuple[torch.Tensor, torch.Tensor]] | None,
+    ) -> tuple[torch.Tensor | None, torch.Tensor | None]:
         gate_head = self.action_expert_depth_gate
         if gate_head is None:
             return None, None
@@ -856,7 +970,9 @@ class MolmoAct2(Molmo2):
         if isinstance(gate, torch.Tensor):
             return gate
         if len(gate) != num_layers:
-            raise ValueError(f"Depth gate layer count mismatch: gates={len(gate)}, layers={num_layers}.")
+            raise ValueError(
+                f"Depth gate layer count mismatch: gates={len(gate)}, layers={num_layers}."
+            )
         return gate[layer_idx]
 
     @staticmethod
@@ -869,17 +985,21 @@ class MolmoAct2(Molmo2):
 
     def _apply_depth_gate_to_layer_states(
         self,
-        layer_states: Optional[Sequence[torch.Tensor]],
-        depth_mask: Optional[torch.Tensor],
-        gate: Optional[torch.Tensor | Sequence[torch.Tensor]],
-    ) -> Optional[Sequence[torch.Tensor]]:
+        layer_states: Sequence[torch.Tensor] | None,
+        depth_mask: torch.Tensor | None,
+        gate: torch.Tensor | Sequence[torch.Tensor] | None,
+    ) -> Sequence[torch.Tensor] | None:
         if layer_states is None or depth_mask is None or gate is None:
             return layer_states
         gated_states = []
         for layer_idx, hidden in enumerate(layer_states):
-            layer_gate = self._depth_gate_for_layer(gate, layer_idx, num_layers=len(layer_states))
+            layer_gate = self._depth_gate_for_layer(
+                gate, layer_idx, num_layers=len(layer_states)
+            )
             mask = depth_mask.to(device=hidden.device, dtype=torch.bool)
-            scale = torch.ones((*mask.shape, 1), device=hidden.device, dtype=hidden.dtype)
+            scale = torch.ones(
+                (*mask.shape, 1), device=hidden.device, dtype=hidden.dtype
+            )
             scale = torch.where(
                 mask.unsqueeze(-1),
                 layer_gate.to(device=hidden.device, dtype=hidden.dtype).view(-1, 1, 1),
@@ -890,15 +1010,17 @@ class MolmoAct2(Molmo2):
 
     def _apply_depth_gate_to_layer_kv_states(
         self,
-        layer_kv_states: Optional[Sequence[Tuple[torch.Tensor, torch.Tensor]]],
-        depth_mask: Optional[torch.Tensor],
-        gate: Optional[torch.Tensor | Sequence[torch.Tensor]],
-    ) -> Optional[Sequence[Tuple[torch.Tensor, torch.Tensor]]]:
+        layer_kv_states: Sequence[tuple[torch.Tensor, torch.Tensor]] | None,
+        depth_mask: torch.Tensor | None,
+        gate: torch.Tensor | Sequence[torch.Tensor] | None,
+    ) -> Sequence[tuple[torch.Tensor, torch.Tensor]] | None:
         if layer_kv_states is None or depth_mask is None or gate is None:
             return layer_kv_states
         gated_kv = []
         for layer_idx, (key, value) in enumerate(layer_kv_states):
-            layer_gate = self._depth_gate_for_layer(gate, layer_idx, num_layers=len(layer_kv_states))
+            layer_gate = self._depth_gate_for_layer(
+                gate, layer_idx, num_layers=len(layer_kv_states)
+            )
             mask = depth_mask.to(device=key.device, dtype=torch.bool)
             view_shape = [mask.shape[0], mask.shape[1]] + [1] * (key.ndim - 2)
             scale = torch.ones(view_shape, device=key.device, dtype=key.dtype)
@@ -914,12 +1036,14 @@ class MolmoAct2(Molmo2):
     def _mask_discrete_output_span(
         row_ids: torch.Tensor,
         row_mask: torch.Tensor,
-        start_id: Optional[int],
-        end_id: Optional[int],
+        start_id: int | None,
+        end_id: int | None,
     ) -> None:
         if start_id is None or end_id is None:
             return
-        start_positions = (row_ids == start_id).nonzero(as_tuple=False).flatten().tolist()
+        start_positions = (
+            (row_ids == start_id).nonzero(as_tuple=False).flatten().tolist()
+        )
         if not start_positions:
             return
         end_positions = (row_ids == end_id).nonzero(as_tuple=False).flatten().tolist()
@@ -931,13 +1055,18 @@ class MolmoAct2(Molmo2):
                 row_mask[start_pos:] = False
                 break
             end_pos = end_positions[end_ptr]
-            row_mask[start_pos:end_pos + 1] = False
+            row_mask[start_pos : end_pos + 1] = False
             end_ptr += 1
 
     def _cache_to_sequence(self, cache: torch.Tensor) -> torch.Tensor:
         if cache.dim() != 4:
-            raise ValueError(f"Expected KV cache tensor with 4 dims, got shape {tuple(cache.shape)}")
-        head_candidates = {self.config.llm.effective_n_kv_heads, self.config.llm.n_heads}
+            raise ValueError(
+                f"Expected KV cache tensor with 4 dims, got shape {tuple(cache.shape)}"
+            )
+        head_candidates = {
+            self.config.llm.effective_n_kv_heads,
+            self.config.llm.n_heads,
+        }
         # Standard cache shape: (B, n_heads, T, head_dim)
         if cache.shape[1] in head_candidates:
             bsz, n_heads, seq_len, head_dim = cache.shape
@@ -955,10 +1084,12 @@ class MolmoAct2(Molmo2):
 
     def _select_layer_kv_states(
         self,
-        layer_kv_states: Sequence[Tuple[torch.Tensor, torch.Tensor]],
-    ) -> Sequence[Tuple[torch.Tensor, torch.Tensor]]:
+        layer_kv_states: Sequence[tuple[torch.Tensor, torch.Tensor]],
+    ) -> Sequence[tuple[torch.Tensor, torch.Tensor]]:
         if not layer_kv_states:
-            raise ValueError("No layer KV states provided for action expert conditioning.")
+            raise ValueError(
+                "No layer KV states provided for action expert conditioning."
+            )
         action_expert = self._require_action_expert()
         kv_seq = [
             (self._cache_to_sequence(k), self._cache_to_sequence(v))
@@ -974,20 +1105,21 @@ class MolmoAct2(Molmo2):
 
     def _chunk_attention_mask(
         self,
-        encoder_attention_mask: Optional[torch.Tensor],
-        subsegment_ids: Optional[torch.Tensor],
+        encoder_attention_mask: torch.Tensor | None,
+        subsegment_ids: torch.Tensor | None,
         packed_batch_idx: torch.Tensor,
         packed_example_ids: torch.Tensor,
-    ) -> Optional[torch.Tensor]:
+    ) -> torch.Tensor | None:
         if encoder_attention_mask is not None:
             mask = encoder_attention_mask.index_select(0, packed_batch_idx)
         else:
             mask = None
         if subsegment_ids is None:
             return mask
-        example_assignments = subsegment_ids.index_select(
-            0, packed_batch_idx
-        ) // EXAMPLE_SUBSEGMENT_INCREMENT
+        example_assignments = (
+            subsegment_ids.index_select(0, packed_batch_idx)
+            // EXAMPLE_SUBSEGMENT_INCREMENT
+        )
         chunk_examples = packed_example_ids.view(-1, 1)
         chunk_mask = example_assignments == chunk_examples
         if mask is None:
@@ -996,11 +1128,11 @@ class MolmoAct2(Molmo2):
 
     def _maybe_detach_action_expert_condition(
         self,
-        layer_states: Optional[Sequence[torch.Tensor]],
-        layer_kv_states: Optional[Sequence[Tuple[torch.Tensor, torch.Tensor]]],
-    ) -> Tuple[
-        Optional[Sequence[torch.Tensor]],
-        Optional[Sequence[Tuple[torch.Tensor, torch.Tensor]]],
+        layer_states: Sequence[torch.Tensor] | None,
+        layer_kv_states: Sequence[tuple[torch.Tensor, torch.Tensor]] | None,
+    ) -> tuple[
+        Sequence[torch.Tensor] | None,
+        Sequence[tuple[torch.Tensor, torch.Tensor]] | None,
     ]:
         if not self.config.action_expert_detach_vlm:
             return layer_states, layer_kv_states
@@ -1017,25 +1149,29 @@ class MolmoAct2(Molmo2):
     def _compute_flow_matching_loss(
         self,
         actions: torch.Tensor,
-        layer_states: Optional[Sequence[torch.Tensor]],
-        layer_kv_states: Optional[Sequence[Tuple[torch.Tensor, torch.Tensor]]],
-        encoder_attention_mask: Optional[torch.Tensor],
-        action_horizon_is_pad: Optional[torch.Tensor],
-        action_dim_is_pad: Optional[torch.Tensor],
-        states: Optional[torch.Tensor],
-        packed_batch_idx: Optional[torch.Tensor],
-        packed_example_ids: Optional[torch.Tensor],
-        packed_action_chunk_is_valid: Optional[torch.Tensor],
-        subsegment_ids: Optional[torch.Tensor],
+        layer_states: Sequence[torch.Tensor] | None,
+        layer_kv_states: Sequence[tuple[torch.Tensor, torch.Tensor]] | None,
+        encoder_attention_mask: torch.Tensor | None,
+        action_horizon_is_pad: torch.Tensor | None,
+        action_dim_is_pad: torch.Tensor | None,
+        states: torch.Tensor | None,
+        packed_batch_idx: torch.Tensor | None,
+        packed_example_ids: torch.Tensor | None,
+        packed_action_chunk_is_valid: torch.Tensor | None,
+        subsegment_ids: torch.Tensor | None,
         num_flow_timesteps: int = 1,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         action_expert = self._require_action_expert()
         if (layer_states is None) == (layer_kv_states is None):
             raise ValueError("Provide exactly one of layer_states or layer_kv_states.")
         if layer_states is not None and len(layer_states) == 0:
-            raise ValueError("Expected at least one layer state for action conditioning.")
+            raise ValueError(
+                "Expected at least one layer state for action conditioning."
+            )
         if layer_kv_states is not None and len(layer_kv_states) == 0:
-            raise ValueError("Expected at least one layer KV state for action conditioning.")
+            raise ValueError(
+                "Expected at least one layer KV state for action conditioning."
+            )
         batch_size = actions.shape[0]
         device = actions.device
         if packed_batch_idx is None:
@@ -1047,13 +1183,13 @@ class MolmoAct2(Molmo2):
         else:
             packed_example_ids = packed_example_ids.to(device=device, dtype=torch.long)
         if packed_action_chunk_is_valid is not None:
-            packed_action_chunk_is_valid = packed_action_chunk_is_valid.to(device=device, dtype=torch.bool)
+            packed_action_chunk_is_valid = packed_action_chunk_is_valid.to(
+                device=device, dtype=torch.bool
+            )
         if packed_batch_idx.numel() == 0:
             raise RuntimeError("Received empty action chunks for flow matching")
         source_tensor = (
-            layer_states[0]
-            if layer_states is not None
-            else layer_kv_states[0][0]
+            layer_states[0] if layer_states is not None else layer_kv_states[0][0]
         )
         batch_dim = source_tensor.shape[0]
         max_idx = int(packed_batch_idx.max().item())
@@ -1077,9 +1213,11 @@ class MolmoAct2(Molmo2):
                 )
                 for key, value in layer_kv_states
             ]
-        chunk_layer_states, chunk_layer_kv_states = self._maybe_detach_action_expert_condition(
-            chunk_layer_states,
-            chunk_layer_kv_states,
+        chunk_layer_states, chunk_layer_kv_states = (
+            self._maybe_detach_action_expert_condition(
+                chunk_layer_states,
+                chunk_layer_kv_states,
+            )
         )
         chunk_attention_mask = self._chunk_attention_mask(
             encoder_attention_mask,
@@ -1139,13 +1277,14 @@ class MolmoAct2(Molmo2):
             actions.shape[2],
         )
         timesteps_flat = timesteps.reshape(batch_size * num_flow_timesteps)
-        chunk_layer_states_expanded = None
         chunk_layer_kv_states_expanded = None
         if chunk_layer_states is not None:
-            chunk_layer_states_expanded = [
+            [
                 hidden.unsqueeze(1)
                 .expand(-1, num_flow_timesteps, -1, -1)
-                .reshape(batch_size * num_flow_timesteps, hidden.shape[1], hidden.shape[2])
+                .reshape(
+                    batch_size * num_flow_timesteps, hidden.shape[1], hidden.shape[2]
+                )
                 for hidden in chunk_layer_states
             ]
         else:
@@ -1179,21 +1318,25 @@ class MolmoAct2(Molmo2):
         else:
             states_expanded = None
         if action_horizon_is_pad is not None:
-            action_attention_mask = (~action_horizon_is_pad.to(device=device, dtype=torch.bool))
+            action_attention_mask = ~action_horizon_is_pad.to(
+                device=device, dtype=torch.bool
+            )
             action_attention_mask_expanded = (
                 action_attention_mask.unsqueeze(1)
                 .expand(-1, num_flow_timesteps, -1)
-                .reshape(batch_size * num_flow_timesteps, action_attention_mask.shape[1])
+                .reshape(
+                    batch_size * num_flow_timesteps, action_attention_mask.shape[1]
+                )
             )
         else:
             action_attention_mask_expanded = None
 
-        action_expert_kwargs = dict(
-            encoder_kv_states=chunk_layer_kv_states_expanded,
-            encoder_attention_mask=chunk_attention_mask_expanded,
-            action_attention_mask=action_attention_mask_expanded,
-            state_embeddings=states_expanded,
-        )
+        action_expert_kwargs = {
+            "encoder_kv_states": chunk_layer_kv_states_expanded,
+            "encoder_attention_mask": chunk_attention_mask_expanded,
+            "action_attention_mask": action_attention_mask_expanded,
+            "state_embeddings": states_expanded,
+        }
         try:
             pred_velocity = action_expert(
                 xt_flat,
@@ -1203,7 +1346,9 @@ class MolmoAct2(Molmo2):
         except RuntimeError as exc:
             exc_message = str(exc)
             if "Non-finite" in exc_message:
-                bad_rows_match = re.search(r"(?:^|, )k_bad_batch_rows=\[([^\]]*)\]", exc_message)
+                bad_rows_match = re.search(
+                    r"(?:^|, )k_bad_batch_rows=\[([^\]]*)\]", exc_message
+                )
                 suspect_base_rows = None
                 if bad_rows_match is not None:
                     raw_rows = [
@@ -1211,7 +1356,9 @@ class MolmoAct2(Molmo2):
                         for part in bad_rows_match.group(1).split(",")
                         if part.strip()
                     ]
-                    suspect_base_rows = sorted({row // num_flow_timesteps for row in raw_rows})
+                    suspect_base_rows = sorted(
+                        {row // num_flow_timesteps for row in raw_rows}
+                    )
                 raise RuntimeError(
                     f"{exc_message}, num_flow_timesteps={num_flow_timesteps}, "
                     f"suspect_base_batch_rows={suspect_base_rows}, "
@@ -1232,10 +1379,20 @@ class MolmoAct2(Molmo2):
         if not torch.isfinite(pred_velocity).all():
             encoder_all_masked = None
             if chunk_attention_mask_expanded is not None:
-                encoder_all_masked = bool((~chunk_attention_mask_expanded.to(torch.bool)).all(dim=-1).any().item())
+                encoder_all_masked = bool(
+                    (~chunk_attention_mask_expanded.to(torch.bool))
+                    .all(dim=-1)
+                    .any()
+                    .item()
+                )
             action_all_masked = None
             if action_attention_mask_expanded is not None:
-                action_all_masked = bool((~action_attention_mask_expanded.to(torch.bool)).all(dim=-1).any().item())
+                action_all_masked = bool(
+                    (~action_attention_mask_expanded.to(torch.bool))
+                    .all(dim=-1)
+                    .any()
+                    .item()
+                )
             raise RuntimeError(
                 "Non-finite action expert prediction in flow matching: "
                 f"pred_velocity_finite={bool(torch.isfinite(pred_velocity).all().item())}, "
@@ -1276,12 +1433,14 @@ class MolmoAct2(Molmo2):
                 f"actions_shape={tuple(actions.shape)}."
             )
 
-        return self._reduce_flow_matching_loss(loss, packed_action_chunk_is_valid), pred_velocity.mean(dim=1)
+        return self._reduce_flow_matching_loss(
+            loss, packed_action_chunk_is_valid
+        ), pred_velocity.mean(dim=1)
 
     @staticmethod
     def _reduce_flow_matching_loss(
         loss: torch.Tensor,
-        packed_action_chunk_is_valid: Optional[torch.Tensor] = None,
+        packed_action_chunk_is_valid: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if packed_action_chunk_is_valid is None:
             return loss.mean()
@@ -1305,7 +1464,7 @@ class MolmoAct2(Molmo2):
     @staticmethod
     def _apply_action_chunk_padding_mask(
         loss: torch.Tensor,
-        action_horizon_is_pad: Optional[torch.Tensor],
+        action_horizon_is_pad: torch.Tensor | None,
         enabled: bool,
     ) -> torch.Tensor:
         if not enabled or action_horizon_is_pad is None:
@@ -1316,11 +1475,11 @@ class MolmoAct2(Molmo2):
     @staticmethod
     def _action_dim_valid_mask(
         target: torch.Tensor,
-        action_dim_is_pad: Optional[torch.Tensor],
-    ) -> Optional[torch.Tensor]:
+        action_dim_is_pad: torch.Tensor | None,
+    ) -> torch.Tensor | None:
         if action_dim_is_pad is None:
             return None
-        mask = (~action_dim_is_pad.to(device=target.device, dtype=torch.bool))
+        mask = ~action_dim_is_pad.to(device=target.device, dtype=torch.bool)
         if mask.ndim == 1:
             mask = mask.unsqueeze(0)
         if mask.shape[-1] != target.shape[-1]:
@@ -1344,7 +1503,7 @@ class MolmoAct2(Molmo2):
         cls,
         tensor: torch.Tensor,
         *,
-        action_dim_is_pad: Optional[torch.Tensor],
+        action_dim_is_pad: torch.Tensor | None,
         enabled: bool,
     ) -> torch.Tensor:
         if not enabled:
@@ -1359,7 +1518,7 @@ class MolmoAct2(Molmo2):
         cls,
         loss: torch.Tensor,
         *,
-        action_dim_is_pad: Optional[torch.Tensor],
+        action_dim_is_pad: torch.Tensor | None,
         enabled: bool,
     ) -> torch.Tensor:
         if not enabled:
@@ -1372,7 +1531,7 @@ class MolmoAct2(Molmo2):
         return (loss * valid).sum(dim=-1) / denom
 
     def get_action_expert_parameters(self) -> Iterator[torch.Tensor]:
-        params: List[torch.Tensor] = []
+        params: list[torch.Tensor] = []
         if self.action_expert is not None:
             params.extend(self.action_expert.parameters())
         if self.action_expert_depth_gate is not None:
