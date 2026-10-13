@@ -10,6 +10,8 @@ Policies and prompts: configs/x5_molmo_policies.json, configs/x5_molmo_tasks.jso
 client initializes real hardware and enables policy motion like the original launcher.
 DRY_RUN=1 disables policy motion/reset; SDK hold/gain/damping still occur.
 Legacy server|client rgb|mae [arguments] remains supported.
+MOLMO_EXECUTION_MODE=rtc selects asynchronous RTC on the client (default: sync).
+RTC_QUEUE_THRESHOLD=18 RTC_EXECUTION_HORIZON=20 RTC_MAX_GUIDANCE_WEIGHT=10.
 EOF
 }
 if [[ ${1:-} == --help || ${1:-} == -h ]]; then usage; exit 0; fi
@@ -48,6 +50,13 @@ CLIENT_PYTHON=${MOLMO_CLIENT_PYTHON:-$OPENPI_ROOT/.venv/bin/python}
 export PYTHONNOUSERSITE=1 PYTHONUNBUFFERED=1 JAX_PLATFORMS=cpu XLA_PYTHON_CLIENT_PREALLOCATE=false
 export PYTHONPATH="$X5_PYTHON_DIR:$OPENPI_ROOT:$OPENPI_ROOT/src:$OPENPI_ROOT/packages/openpi-client/src:$OPENPI_ROOT/examples/x5_client${PYTHONPATH:+:$PYTHONPATH}"
 EXTRA_ARGS=()
+case "${MOLMO_EXECUTION_MODE:-sync}" in
+  sync) ;;
+  rtc) EXTRA_ARGS+=(--rtc --rtc-queue-threshold="${RTC_QUEUE_THRESHOLD:-18}"
+                   --rtc-execution-horizon="${RTC_EXECUTION_HORIZON:-20}"
+                   --rtc-max-guidance-weight="${RTC_MAX_GUIDANCE_WEIGHT:-10}");;
+  *) echo "MOLMO_EXECUTION_MODE must be sync or rtc" >&2; exit 2;;
+esac
 if [[ "$MODE" == mae ]]; then
   EXTRA_ARGS+=(--tactile-serials "$LEFT_GRIPPER_LEFT_TACTILE" "$LEFT_GRIPPER_RIGHT_TACTILE" "$RIGHT_GRIPPER_LEFT_TACTILE" "$RIGHT_GRIPPER_RIGHT_TACTILE")
 fi

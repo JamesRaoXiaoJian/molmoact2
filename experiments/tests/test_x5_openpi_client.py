@@ -81,7 +81,7 @@ def test_help_and_device_parse(monkeypatch):
         (["--enable-motion"], False),
         (["--enable-motion", "--confirm-motion=WRONG"], False),
         (["--enable-motion", "--confirm-motion=MOVE_X5"], True),
-        (["--rtc"], False),
+        (["--rtc"], True),
         (["--execute-steps=37"], False),
         (["--action-start-index=1"], True),
         (["--auto-reset-on-startup"], False),
@@ -102,8 +102,9 @@ def test_original_motion_gates(monkeypatch, extra, allowed):
         assert (
             args.execute_steps == 5
             and args.action_start_index in (0, 1)
-            and not args.rtc
         )
+        if args.rtc:
+            assert args.rtc_queue_threshold == 18 and args.rtc_execution_horizon == 20
         assert args.reject_first_joint_delta == 0.25 and args.max_step_delta == 0.02
         assert args.max_gripper_step_delta == 0.1
 

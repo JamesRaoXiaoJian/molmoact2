@@ -17,7 +17,8 @@ def parse_entry(argv=None):
             "--*-gripper-open-readout; MAE also needs --tactile-serials (two). "
             "Set task with --prompt. Motion requires --enable-motion, "
             "--confirm-motion MOVE_X5, --gravity-compensation-setup. "
-            "Use the unified shell entry for 5-step, synchronous defaults. "
+            "Default is 5-step synchronous execution; --rtc selects 30 Hz asynchronous "
+            "RTC (queue threshold 18, execution horizon 20). "
             "Even without motion, real SDK initialization/exit sends hold/gain/damping."
         ),
     )

@@ -583,6 +583,7 @@ class MolmoAct2(Molmo2):
         encoder_attention_mask: torch.Tensor | None = None,
         tactile_images: torch.Tensor | None = None,
         tactile_token_mask: torch.Tensor | None = None,
+        rtc_condition: dict | None = None,
     ) -> torch.Tensor:
         """Generate an action trajectory via flow-matching integration."""
         action_expert = self._require_action_expert()
@@ -675,7 +676,6 @@ class MolmoAct2(Molmo2):
             action_dim_is_pad=action_dim_is_pad,
             enabled=self.config.mask_action_dim_padding,
         )
-        dt = 1.0 / steps
         layer_states, layer_kv_states = self._maybe_detach_action_expert_condition(
             layer_states,
             layer_kv_states,
@@ -710,6 +710,14 @@ class MolmoAct2(Molmo2):
                 modulations = action_expert.inference_modulations(
                     steps, batch_size, device, dtype
                 )
+        if rtc_condition is not None:
+            if rtc_condition["prefix"].shape != trajectory.shape:
+                raise ValueError("RTC prefix shape must match the full padded action trajectory")
+            for key in ("prefix", "weights"):
+                if finite_checks is not None:
+                    finite_checks.record(rtc_condition[key], f"rtc_{key}")
+                elif not bool(torch.isfinite(rtc_condition[key]).all()):
+                    raise RuntimeError("Non-finite RTC condition; no actions returned")
         if mode == "graph":
             from olmo.nn.native_action_graph import NativeActionFlowGraph
 
@@ -726,7 +734,10 @@ class MolmoAct2(Molmo2):
                 modulations,
                 action_dim_is_pad,
                 steps,
+                rtc_condition=rtc_condition,
             )
+        from olmo.nn.rtc_guidance import rtc_euler_step
+
         for i in range(steps):
             t = torch.full((batch_size,), i / steps, device=device)
             trajectory = self._mask_action_dim_tensor(
@@ -752,7 +763,9 @@ class MolmoAct2(Molmo2):
                 action_dim_is_pad=action_dim_is_pad,
                 enabled=self.config.mask_action_dim_padding,
             )
-            trajectory = trajectory + dt * velocity
+            trajectory = rtc_euler_step(trajectory, velocity, i, steps, rtc_condition)
+            if rtc_condition is not None and finite_checks is not None:
+                finite_checks.record(trajectory, f"rtc_trajectory_{i}")
             trajectory = self._mask_action_dim_tensor(
                 trajectory,
                 action_dim_is_pad=action_dim_is_pad,

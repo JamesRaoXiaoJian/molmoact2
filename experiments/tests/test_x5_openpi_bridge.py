@@ -235,3 +235,36 @@ def test_control_glue_rejects_unsafe_window_and_modes(override):
         setattr(args, k, v)
     with pytest.raises(ValueError):
         validate_control_args(args)
+
+
+def test_rtc_wire_forwards_raw_prefix_without_gripper_calibration():
+    native = FakeMolmo()
+    bridge = OpenPIBridge(native, "rgb", enable_rtc=True)
+    obs = observation()
+    prefix = np.ones((30, 14), dtype=np.float32)
+    prefix[:, 6] = -3.5
+    prefix[:, 13] = -2.4
+    obs.update(actions=prefix, _rtc=dict(prefix_valid_steps=18, inference_delay=12,
+               execution_horizon=20, max_guidance_weight=10.0))
+    bridge.infer(obs, "rtc-test")
+    payload = native.payloads[-1]
+    np.testing.assert_array_equal(payload["rtc"]["previous_actions"], prefix)
+    assert payload["rtc"]["previous_actions"] is not prefix
+    assert payload["rtc"]["options"]["inference_delay"] == 12
+    assert bridge.metadata["rtc_protocol"] == "molmo-rtc-v1"
+
+
+@pytest.mark.parametrize("bad", ["missing", "shape", "dtype", "masked_nan", "options"])
+def test_rtc_wire_rejects_invalid_prefix_before_model_call(bad):
+    native = FakeMolmo()
+    bridge = OpenPIBridge(native, "rgb", enable_rtc=True)
+    obs = observation()
+    obs.update(actions=np.zeros((30,14),np.float32),_rtc=dict(prefix_valid_steps=18,
+        inference_delay=12,execution_horizon=20,max_guidance_weight=10.0))
+    if bad == "missing": obs.pop("actions")
+    if bad == "shape": obs["actions"] = np.zeros((30,15),np.float32)
+    if bad == "dtype": obs["actions"] = obs["actions"].astype(np.float64)
+    if bad == "masked_nan": obs["actions"][29,13] = np.nan
+    if bad == "options": obs["_rtc"]["inference_delay"] = True
+    with pytest.raises(ValueError): bridge.infer(obs,"rtc-test")
+    assert not native.payloads

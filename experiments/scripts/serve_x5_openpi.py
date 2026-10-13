@@ -75,7 +75,7 @@ ACTION_NAMES = [
 class OpenPIBridge:
     """Delegate model semantics to the unchanged Molmo HTTP service in process."""
 
-    def __init__(self, molmo, mode: str):
+    def __init__(self, molmo, mode: str, *, enable_rtc: bool = False):
         if mode not in ("rgb", "mae"):
             raise ValueError("Select rgb or mae explicitly")
         self.molmo = molmo
@@ -87,7 +87,9 @@ class OpenPIBridge:
             "model_type": "molmoact2",
             "model_variant": mode,
             "protocol": "openpi-msgpack-numpy",
-            "supports_rtc": False,
+            "supports_rtc": enable_rtc,
+            "rtc_protocol": "molmo-rtc-v1" if enable_rtc else None,
+            "rtc_guidance": "identity_jacobian" if enable_rtc else None,
             "action_horizon": 30,
             "action_dim": 14,
             "n_action_steps": 5,
@@ -117,9 +119,11 @@ class OpenPIBridge:
     def payload(self, observation: dict, session: str):
         if not isinstance(observation, dict):
             raise TypeError("Observation must be a mapping")
-        if "_rtc" in observation:
+        if "_rtc" in observation and not self.metadata["supports_rtc"]:
             raise ValueError("MolmoAct2 adapter does not support RTC")
         allowed = {"state", "prompt", "base_image", "_reset", *RGB_KEYS, *TACTILE_KEYS}
+        if "_rtc" in observation:
+            allowed |= {"_rtc", "actions"}
         unknown = set(observation) - allowed
         if unknown:
             raise ValueError(f"Unsupported observation fields: {sorted(unknown)}")
@@ -144,6 +148,14 @@ class OpenPIBridge:
             "action_chunk": True,
             "n_action_steps": 30,
         }
+        if "_rtc" in observation:
+            from olmo.nn.rtc_guidance import validate_rtc_options
+
+            options = validate_rtc_options(observation["_rtc"], 30)
+            prefix = np.asarray(observation.get("actions"))
+            if prefix.shape != (30, 14) or prefix.dtype != np.float32 or not np.isfinite(prefix).all():
+                raise ValueError("RTC actions must be finite float32 (30, 14) in raw policy joint units")
+            result["rtc"] = {"previous_actions": prefix.copy(), "options": options}
         images = dict(RGB_KEYS)
         if self.mode == "mae":
             images.update({key: key for key in TACTILE_KEYS})
@@ -269,7 +281,7 @@ def build_bridge(mode, checkpoint=None, norm_tag=None, tokenizer_dir=None):
             compile_action_blocks(handles.model)
     elif compile_setting == "1":
         raise ValueError("Action block compilation requires the native checkpoint backend")
-    bridge = OpenPIBridge(molmo, mode)
+    bridge = OpenPIBridge(molmo, mode, enable_rtc=handles is not None)
     bridge.metadata["norm_tag"] = tag
     bridge.metadata["native_inference_optimization"] = (
         optimization if handles is not None else "hf_backend"

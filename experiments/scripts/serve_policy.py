@@ -635,6 +635,8 @@ class MolmoAct2Server:
                 state,
                 instruction,
             )
+            if payload.get("rtc") is not None and not action_chunk_request:
+                raise ValueError("RTC requires a complete action chunk request")
             if action_chunk_request:
                 with self._policy_lock:
                     self._restore_policy_state(session_id)
@@ -643,6 +645,7 @@ class MolmoAct2Server:
                         norm_tag=tag,
                         num_steps=num_steps,
                         n_action_steps=n_action_steps,
+                        **({"rtc": payload["rtc"]} if payload.get("rtc") is not None else {}),
                     )
                     latest_depth_codes = self.policy.get_last_depth_video_codes()
                     inference_calls = int(getattr(self._state_owner(), "_last_model_inference_calls", 1) or 0)

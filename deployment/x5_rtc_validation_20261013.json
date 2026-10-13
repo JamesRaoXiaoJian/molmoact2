@@ -1,0 +1,309 @@
+{
+  "source_baseline": "40fa7b1",
+  "device": "RTX 5080 Laptop",
+  "solver_steps": 10,
+  "action_horizon": 30,
+  "control_hz": 30,
+  "validation_scope": "Recorded observations and mocked hardware only; no task-success evaluation",
+  "unique_cpu_tests_passed": 91,
+  "actual_action_sends": 0,
+  "real_robot_initializations": 0,
+  "runs": [
+    {
+      "model": "rgb",
+      "compiled": false,
+      "parity": {
+        "model": "rgb",
+        "compiled": false,
+        "rows": [
+          {
+            "mode": "modcache",
+            "n": 20,
+            "p50_ms": 429.299096489558,
+            "p95_ms": 450.56122196256183,
+            "min_ms": 421.0780760040507,
+            "max_ms": 457.3439359664917,
+            "eager_bitwise_equal": true,
+            "graph_captures": 0,
+            "two_warmup_calls_ms": 858.1080389558338,
+            "peak_allocated_gib": 11.129148960113525
+          },
+          {
+            "mode": "graph",
+            "n": 20,
+            "p50_ms": 330.9576484898571,
+            "p95_ms": 364.2250288656214,
+            "min_ms": 305.26491499040276,
+            "max_ms": 377.157395996619,
+            "eager_bitwise_equal": true,
+            "graph_captures": 1,
+            "two_warmup_calls_ms": 1555.8135129977018,
+            "peak_allocated_gib": 11.223995685577393
+          }
+        ],
+        "empty_prefix_bitwise_equal": true,
+        "raw_gripper_prefix_preserved": true,
+        "prefix_sensitivity_max_rad": [
+          0.036849796772003174,
+          0.03676760196685791
+        ],
+        "scope": "Two recorded observations; inference correctness and latency only, not task success",
+        "real_robot_initializations": 0,
+        "actual_action_sends": 0
+      },
+      "normal_control_interval_ms": {
+        "n": 68,
+        "p50_ms": 33.43026150832884,
+        "p95_ms": 34.60791282413993,
+        "min_ms": 32.98562904819846,
+        "max_ms": 38.13361999345943
+      },
+      "normal_metrics": {
+        "discarded_responses": 2,
+        "underflows": 0,
+        "failures": 0,
+        "budget_misses": 0,
+        "warmup_discards": 1,
+        "dropped_prefix_frames": 30,
+        "initial_request_ms": [
+          1849.447812011931,
+          311.6288299788721,
+          323.1174689717591
+        ],
+        "inferences": 5,
+        "generation": 3,
+        "queue_frames": 0,
+        "expired_steps": 0,
+        "latency_p95_ms": 321.77249477244914
+      },
+      "control_cases_passed": [
+        "normal",
+        "late_pause",
+        "error",
+        "underflow"
+      ]
+    },
+    {
+      "model": "mae",
+      "compiled": false,
+      "parity": {
+        "model": "mae",
+        "compiled": false,
+        "rows": [
+          {
+            "mode": "modcache",
+            "n": 20,
+            "p50_ms": 465.22868250031024,
+            "p95_ms": 478.8799589150585,
+            "min_ms": 457.01510802609846,
+            "max_ms": 479.1582690086216,
+            "eager_bitwise_equal": true,
+            "graph_captures": 0,
+            "two_warmup_calls_ms": 924.0573080023751,
+            "peak_allocated_gib": 11.7054443359375
+          },
+          {
+            "mode": "graph",
+            "n": 20,
+            "p50_ms": 387.0351850055158,
+            "p95_ms": 404.15815228479914,
+            "min_ms": 361.5436339750886,
+            "max_ms": 420.8688479848206,
+            "eager_bitwise_equal": true,
+            "graph_captures": 1,
+            "two_warmup_calls_ms": 1644.462673983071,
+            "peak_allocated_gib": 11.805592060089111
+          }
+        ],
+        "empty_prefix_bitwise_equal": true,
+        "raw_gripper_prefix_preserved": true,
+        "prefix_sensitivity_max_rad": [
+          0.03685528039932251,
+          0.036906301975250244
+        ],
+        "scope": "Two recorded observations; inference correctness and latency only, not task success",
+        "real_robot_initializations": 0,
+        "actual_action_sends": 0
+      },
+      "normal_control_interval_ms": {
+        "n": 68,
+        "p50_ms": 33.43971350113861,
+        "p95_ms": 33.883153239730746,
+        "min_ms": 32.818349020089954,
+        "max_ms": 34.0533479466103
+      },
+      "normal_metrics": {
+        "discarded_responses": 2,
+        "underflows": 0,
+        "failures": 0,
+        "budget_misses": 0,
+        "warmup_discards": 1,
+        "dropped_prefix_frames": 33,
+        "initial_request_ms": [
+          1677.8020769706927,
+          364.40015299012884,
+          367.80581797938794
+        ],
+        "inferences": 5,
+        "generation": 3,
+        "queue_frames": 0,
+        "expired_steps": 1,
+        "latency_p95_ms": 367.1246849815361
+      },
+      "control_cases_passed": [
+        "normal",
+        "late_pause",
+        "error",
+        "underflow"
+      ]
+    },
+    {
+      "model": "rgb",
+      "compiled": true,
+      "parity": {
+        "model": "rgb",
+        "compiled": true,
+        "rows": [
+          {
+            "mode": "modcache",
+            "n": 20,
+            "p50_ms": 299.75347200524993,
+            "p95_ms": 307.73971320304554,
+            "min_ms": 290.6183520099148,
+            "max_ms": 310.22472702898085,
+            "eager_bitwise_equal": true,
+            "graph_captures": 0,
+            "two_warmup_calls_ms": 581.7753779701889,
+            "peak_allocated_gib": 11.129148960113525
+          },
+          {
+            "mode": "graph",
+            "n": 20,
+            "p50_ms": 291.38892999617383,
+            "p95_ms": 311.1047641868936,
+            "min_ms": 273.4414269798435,
+            "max_ms": 324.0515570505522,
+            "eager_bitwise_equal": true,
+            "graph_captures": 1,
+            "two_warmup_calls_ms": 881.2982069794089,
+            "peak_allocated_gib": 11.223995685577393
+          }
+        ],
+        "empty_prefix_bitwise_equal": true,
+        "raw_gripper_prefix_preserved": true,
+        "prefix_sensitivity_max_rad": [
+          0.03672820329666138,
+          0.03698384761810303
+        ],
+        "scope": "Two recorded observations; inference correctness and latency only, not task success",
+        "real_robot_initializations": 0,
+        "actual_action_sends": 0
+      },
+      "normal_control_interval_ms": {
+        "n": 68,
+        "p50_ms": 33.43076049350202,
+        "p95_ms": 33.720599935622886,
+        "min_ms": 32.92076999787241,
+        "max_ms": 33.93348696408793
+      },
+      "normal_metrics": {
+        "discarded_responses": 1,
+        "underflows": 0,
+        "failures": 0,
+        "budget_misses": 0,
+        "warmup_discards": 1,
+        "dropped_prefix_frames": 36,
+        "initial_request_ms": [
+          2061.3847270142287,
+          272.9095129761845,
+          277.36149402335286
+        ],
+        "inferences": 6,
+        "generation": 3,
+        "queue_frames": 0,
+        "expired_steps": 0,
+        "latency_p95_ms": 277.9550342238508
+      },
+      "control_cases_passed": [
+        "normal",
+        "late_pause",
+        "error",
+        "underflow"
+      ]
+    },
+    {
+      "model": "mae",
+      "compiled": true,
+      "parity": {
+        "model": "mae",
+        "compiled": true,
+        "rows": [
+          {
+            "mode": "modcache",
+            "n": 20,
+            "p50_ms": 357.2539385058917,
+            "p95_ms": 360.9341877134284,
+            "min_ms": 352.0919780130498,
+            "max_ms": 364.46474300464615,
+            "eager_bitwise_equal": true,
+            "graph_captures": 0,
+            "two_warmup_calls_ms": 709.4961839611642,
+            "peak_allocated_gib": 11.7054443359375
+          },
+          {
+            "mode": "graph",
+            "n": 20,
+            "p50_ms": 346.79340349975973,
+            "p95_ms": 364.99741254374385,
+            "min_ms": 326.0419800062664,
+            "max_ms": 372.81575199449435,
+            "eager_bitwise_equal": true,
+            "graph_captures": 1,
+            "two_warmup_calls_ms": 1005.9156580246054,
+            "peak_allocated_gib": 11.805592060089111
+          }
+        ],
+        "empty_prefix_bitwise_equal": true,
+        "raw_gripper_prefix_preserved": true,
+        "prefix_sensitivity_max_rad": [
+          0.03687375783920288,
+          0.03687328100204468
+        ],
+        "scope": "Two recorded observations; inference correctness and latency only, not task success",
+        "real_robot_initializations": 0,
+        "actual_action_sends": 0
+      },
+      "normal_control_interval_ms": {
+        "n": 68,
+        "p50_ms": 33.425402973080054,
+        "p95_ms": 33.9464408432832,
+        "min_ms": 32.75889001088217,
+        "max_ms": 34.27927597658709
+      },
+      "normal_metrics": {
+        "discarded_responses": 2,
+        "underflows": 0,
+        "failures": 0,
+        "budget_misses": 0,
+        "warmup_discards": 1,
+        "dropped_prefix_frames": 30,
+        "initial_request_ms": [
+          2198.091893980745,
+          321.80336804594845,
+          353.1087559531443
+        ],
+        "inferences": 5,
+        "generation": 3,
+        "queue_frames": 0,
+        "expired_steps": 0,
+        "latency_p95_ms": 348.97764096967876
+      },
+      "control_cases_passed": [
+        "normal",
+        "late_pause",
+        "error",
+        "underflow"
+      ]
+    }
+  ]
+}

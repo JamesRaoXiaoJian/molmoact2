@@ -5,7 +5,10 @@ from __future__ import annotations
 import ast
 import importlib.util
 import sys
+import socket
+import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 
 class EpisodePolicy:
@@ -15,31 +18,81 @@ class EpisodePolicy:
         if (
             self.metadata.get("model_type") != "molmoact2"
             or self.metadata.get("model_variant") != mode
-            or self.metadata.get("supports_rtc") is not False
+            or not isinstance(self.metadata.get("supports_rtc"), bool)
             or self.metadata.get("action_horizon") != 30
             or self.metadata.get("n_action_steps") != 5
         ):
             raise ValueError(
-                "Expected selected Molmo synchronous 30-step/5-step metadata"
+                "Expected selected Molmo 30-step/5-step metadata"
             )
-        self.pending_reset = True
+        if self.metadata["supports_rtc"] and self.metadata.get("rtc_protocol") != "molmo-rtc-v1":
+            raise ValueError("Unsupported Molmo RTC protocol")
+        self._reset_lock = threading.Lock()
+        self._reset_generation = 0
+        self._ack_generation = -1
 
     def get_server_metadata(self):
         return self.metadata
 
+    @property
+    def pending_reset(self):
+        with self._reset_lock:
+            return self._reset_generation != self._ack_generation
+
     def reset(self):
-        self.pending_reset = True
+        with self._reset_lock:
+            self._reset_generation += 1
 
     def infer(self, observation):
-        request = {**observation, "_reset": self.pending_reset}
+        with self._reset_lock:
+            generation = self._reset_generation
+            reset = generation != self._ack_generation or observation.get("_reset", False)
+        request = {**observation, "_reset": reset}
         result = self.client.infer(request)
-        self.pending_reset = False
+        with self._reset_lock:
+            if generation == self._reset_generation:
+                self._ack_generation = generation
         return result
+
+    def close(self):
+        ws = getattr(self.client, "_ws", None)
+        if ws is not None:
+            transport = getattr(ws, "socket", None)
+            if transport is not None:
+                try:
+                    transport.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+            ws.close()
+
+
+def _validate_rtc_args(args):
+    if not getattr(args, "rtc", False):
+        return
+    threshold = getattr(args, "rtc_queue_threshold", None)
+    horizon = getattr(args, "rtc_execution_horizon", None)
+    if (getattr(args, "control_hz", None) != 30 or args.action_start_index != 0
+            or not isinstance(threshold, int) or not 1 <= threshold < 30
+            or not isinstance(horizon, int) or not threshold <= horizon <= 30):
+        raise ValueError("X5 RTC requires 30 Hz, index zero, and 1 <= queue threshold <= execution horizon <= 30")
+    if not 0 < args.rtc_max_guidance_weight <= 10:
+        raise ValueError("X5 RTC guidance must be in (0, 10]")
+
+
+def _configure_rtc_defaults(args):
+    flags = {arg.split("=", 1)[0] for arg in sys.argv[1:]}
+    if args.rtc:
+        if "--rtc-queue-threshold" not in flags:
+            args.rtc_queue_threshold = 18
+        if "--rtc-execution-horizon" not in flags:
+            args.rtc_execution_horizon = 20
+    return args
 
 
 def validate_control_args(args):
-    if args.rtc or args.policy_transport != "websocket":
-        raise ValueError("Molmo control entry requires synchronous WebSocket mode")
+    if args.policy_transport != "websocket":
+        raise ValueError("Molmo control entry requires WebSocket mode")
+    _validate_rtc_args(args)
     if args.execute_steps != 5 or args.action_start_index != 0:
         raise ValueError(
             "Molmo control entry requires action window [0:5], never 37 steps"
@@ -94,7 +147,7 @@ def load_mock_main(openpi_root: Path, replacements: dict):
     original_parse = module.parse_args
 
     def safe_parse(**kwargs):
-        args = original_parse(**kwargs)
+        args = _configure_rtc_defaults(original_parse(**kwargs))
         validate_control_args(args)
         return args
 
@@ -108,6 +161,14 @@ def _load_episode_main(openpi_root: Path):
     spec = importlib.util.spec_from_file_location("molmo_mock_openpi_main", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    if __package__:
+        from .x5_rtc_client import RTCInferenceEngine
+    else:
+        from x5_rtc_client import RTCInferenceEngine
+
+    # Only replace this loaded control module's engine reference. No edits or
+    # global monkeypatches to the user's OpenPI package/hardware implementation.
+    module.rtc_client = SimpleNamespace(RTCInferenceEngine=RTCInferenceEngine)
     original = ast.parse(path.read_text())
     main = next(
         n for n in original.body if isinstance(n, ast.FunctionDef) and n.name == "main"
@@ -158,10 +219,9 @@ def _load_episode_main(openpi_root: Path):
 
 
 def validate_hardware_control_args(args):
-    if args.rtc or args.policy_transport != "websocket":
-        raise ValueError(
-            "This X5 bridge currently supports synchronous WebSocket; upstream Molmo async/RTC requires a different adapter"
-        )
+    if args.policy_transport != "websocket":
+        raise ValueError("Molmo X5 requires WebSocket transport")
+    _validate_rtc_args(args)
     if (
         not 1 <= args.execute_steps <= 30
         or not 0 <= args.action_start_index < 30
@@ -186,7 +246,7 @@ def load_control_main(openpi_root: Path, mode: str):
     original_parse = module.parse_args
 
     def parse(**kwargs):
-        args = original_parse(**kwargs)
+        args = _configure_rtc_defaults(original_parse(**kwargs))
         validate_hardware_control_args(args)
         return args
 

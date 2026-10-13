@@ -1346,6 +1346,7 @@ class MolmoAct2Policy(PreTrainedPolicy):
         norm_tag: Optional[str] = None,
         num_steps: Optional[int] = None,
         generator: Optional[torch.Generator] = None,
+        rtc: Optional[Dict[str, Any]] = None,
     ) -> MolmoAct2InferenceResult:
         style = self._resolve_style_for_inference(handles)
         generated_token_ids: Optional[torch.Tensor] = None
@@ -1356,6 +1357,21 @@ class MolmoAct2Policy(PreTrainedPolicy):
             else None
         )
         batch_size = int(collated["input_ids"].shape[0])
+        rtc_condition = None
+        if rtc is not None:
+            if handles.inference_action_mode != "continuous" or style_uses_depth_output(style) or not style_uses_action_output(style):
+                raise ValueError("RTC requires continuous action-only inference")
+            from olmo.nn.rtc_guidance import prepare_rtc_condition
+
+            prefix = np.asarray(rtc["previous_actions"])
+            expected = (handles.action_horizon, int(resolved_action_dim))
+            if batch_size != 1 or prefix.shape != expected or prefix.dtype != np.float32 or not np.isfinite(prefix).all():
+                raise ValueError(f"RTC requires a finite float32 raw action prefix of shape {expected}")
+            prefix = handles.robot_processor.normalize_action(prefix.copy(), repo_id=norm_tag or handles.norm_tag)
+            padded = torch.zeros((1, handles.action_horizon, handles.max_action_dim),
+                                 device=handles.device, dtype=torch.float32)
+            padded[0, :, :resolved_action_dim] = torch.as_tensor(prefix, device=handles.device)
+            rtc_condition = prepare_rtc_condition(padded, rtc["options"])
         action_dim_is_pad = None
         if resolved_action_dim is not None:
             action_dim_is_pad = _build_action_dim_is_pad(
@@ -1415,6 +1431,7 @@ class MolmoAct2Policy(PreTrainedPolicy):
                     action_dim_is_pad=action_dim_is_pad,
                     num_steps=resolved_num_steps,
                     generator=generator,
+                    **({"rtc_condition": rtc_condition} if rtc_condition is not None else {}),
                 )
                 action_chunk = _slice_action_dim(action_chunk, int(resolved_action_dim))
                 return MolmoAct2InferenceResult(style=style, actions=action_chunk)
@@ -1479,9 +1496,12 @@ class MolmoAct2Policy(PreTrainedPolicy):
         num_steps: Optional[int] = None,
         n_action_steps: Optional[int] = None,
         generator: Optional[torch.Generator] = None,
+        rtc: Optional[Dict[str, Any]] = None,
     ) -> MolmoAct2InferenceResult:
         hf_backend = getattr(self, "_hf_backend", None)
         if hf_backend is not None:
+            if rtc is not None:
+                raise ValueError("This RTC adapter requires the native checkpoint backend")
             hf_result = hf_backend.generate_inference_result_from_observations(
                 observations if isinstance(observations, list) else [observations],
                 norm_tag=norm_tag,
@@ -1517,6 +1537,8 @@ class MolmoAct2Policy(PreTrainedPolicy):
             norm_tag=norm_tag,
         )
         style = self._resolve_style_for_inference(handles)
+        if rtc is not None and (handles.n_obs_steps != 1 or n_action_steps != handles.action_horizon):
+            raise ValueError("RTC requires one observation and the full predicted action horizon")
         collated = self._collate_example(combined_example, handles)
         result, inference_elapsed = self._call_generate_inference_result(
             collated,
@@ -1524,6 +1546,7 @@ class MolmoAct2Policy(PreTrainedPolicy):
             norm_tag=norm_tag,
             num_steps=num_steps,
             generator=generator,
+            **({"rtc": rtc} if rtc is not None else {}),
         )
         self._last_model_inference_s = float(inference_elapsed)
         self._last_model_inference_calls = 1
