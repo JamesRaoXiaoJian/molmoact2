@@ -525,6 +525,7 @@ def main():
         "control_window": [0, 5],
         "rtc": False,
         "model_type": "molmoact2",
+        "compiled_blocks": bridge.metadata.get("native_action_blocks_compiled", False),
         "original_main_sha256": hashlib.sha256(
             (args.openpi_root / "examples/x5_client/main.py").read_bytes()
         ).hexdigest(),
@@ -543,6 +544,7 @@ def main():
                 "full_original_main": True,
                 "cases": [c["case"] for c in cases],
                 "actual_action_sends": 0,
+                "compiled_blocks": report["compiled_blocks"],
             }
         ),
         flush=True,

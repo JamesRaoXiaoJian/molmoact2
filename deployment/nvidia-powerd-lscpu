@@ -1,0 +1,5 @@
+#!/bin/sh
+# NVIDIA powerd parses `lscpu -p` to count physical CPU packages. On this
+# Ubuntu 22.04 / Core Ultra HX system the default logical socket IDs are
+# misleading. --physical uses the kernel IDs and preserves CPU numbering.
+exec /usr/bin/lscpu --physical "$@"

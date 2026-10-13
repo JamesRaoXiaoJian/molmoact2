@@ -1,6 +1,7 @@
 """Small real-CUDA graph safety/recovery test; offline, no hardware modules."""
 from __future__ import annotations
 
+import argparse
 import json
 from pathlib import Path
 from unittest.mock import patch
@@ -13,8 +14,17 @@ from tests.test_native_action_inference_cache import setup_expert
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--compile-blocks", action="store_true")
+    parser.add_argument("--output", type=Path,
+                        default=Path(__file__).parent / "perf_20261012" / "graph_safety_final.json")
+    args = parser.parse_args()
     model, expert, kv, state, mask = setup_expert()
     expert.to(device="cuda", dtype=torch.bfloat16)
+    if args.compile_blocks:
+        from olmo.nn.native_action_compile import compile_action_blocks
+        model.action_expert = expert
+        compile_action_blocks(model)
     kv = [(k.to("cuda", torch.bfloat16), v.to("cuda", torch.bfloat16)) for k, v in kv]
     state = state.to("cuda", torch.bfloat16)
     mask = mask.to("cuda")
@@ -94,8 +104,10 @@ def main():
         "old_output_no_alias": True, "masked_nan_context_rejected": True,
         "internal_replay_nan_rejected": True, "capture_count": manager.capture_count,
         "actual_action_sends": 0, "hardware_initializations": 0,
+        "compiled_blocks": args.compile_blocks,
     }
-    path = Path(__file__).parent / "perf_20261012" / "graph_safety_final.json"
+    path = args.output
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report))
 

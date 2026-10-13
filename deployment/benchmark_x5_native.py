@@ -207,9 +207,10 @@ def main():
     parser.add_argument("--iterations", type=int, default=20)
     parser.add_argument("--warmup", type=int, default=3)
     parser.add_argument("--profile", action="store_true")
+    parser.add_argument("--output", type=Path, default=ROOT / "deployment/perf_20261012")
     args = parser.parse_args()
-    output = ROOT / "deployment/perf_20261012"
-    output.mkdir(exist_ok=True)
+    output = args.output
+    output.mkdir(parents=True, exist_ok=True)
     native, wire = load_inputs(args.mode)
     start = time.perf_counter()
     bridge = build_bridge(args.mode)
