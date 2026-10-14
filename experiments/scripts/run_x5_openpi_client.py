@@ -50,7 +50,15 @@ def parse_entry(argv=None):
 
 
 def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
     args, remaining = parse_entry(argv)
+    from x5_client_logging import ClientRunLog
+
+    with ClientRunLog(args.mode, argv) as run_log:
+        _run_control(args, remaining, run_log)
+
+
+def _run_control(args, remaining, run_log):
     sys.dont_write_bytecode = True
     sys.path[:0] = [
         str(args.openpi_root),
@@ -61,6 +69,7 @@ def main(argv=None):
     from x5_openpi_control import load_control_main
 
     module = load_control_main(args.openpi_root, args.mode)
+    run_log.attach_control(module)
     original_argv = sys.argv
     sys.argv = ["molmo-x5-client", *remaining]
     try:

@@ -34,6 +34,19 @@ MODEL_SELECT=1 MOLMO_COMPILE_ACTION_EXPERT=1 bash scripts/run_x5_molmo.sh server
 
 ## 数据流与时序
 
+客户端每次启动自动创建 `logs/molmo-<rgb|mae>-client-<时间>-<PID>.log`，终端会显示
+绝对路径；可用 `MOLMO_CLIENT_LOG_DIR` 指定其他目录。日志保存实际启动参数、服务端
+metadata、控制参数、RTC 请求耗时/队列、原控制循环的开始/结束和 Python 异常。
+2026-10-14 以前的入口没有客户端自动文件日志；服务端 `debug.log` 不能替代实机控制日志。
+
+额外的 `control_trace` 仅写文件，逐帧区分 `candidate`（限幅前后与实测状态）和
+`sent`（原 SDK 调用成功返回、调用耗时、发送间隔）。候选目标不代表已经发送；
+SDK 返回成功也不代表机械臂已到位，跟踪误差要与后续实测状态比较。`adjusted_target`
+已经包含夹爪闭合补偿。分析间隔须按原日志中的 episode 开始/结束分段，排除人工等待。
+文件写入在独立线程中执行，队列有界，队列满时丢日志而不阻塞控制；退出末行记录
+`dropped_records`。原生 SDK 直接写到 stdout/stderr 的内容不包含在此 Python 日志中；
+强制杀进程或断电可能丢失队列尾部记录。该日志功能不改变限幅、轨迹、RTC 参数或踏板行为。
+
 ```text
 相机/状态 → 单个后台 RPC → VLM/触觉编码 → 准备 KV → RTC flow → 30×14 原始动作
                 ↑                                         ↓

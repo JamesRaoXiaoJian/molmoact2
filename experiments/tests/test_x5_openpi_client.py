@@ -111,7 +111,8 @@ def test_original_motion_gates(monkeypatch, extra, allowed):
 
 @pytest.mark.parametrize("mode", ["rgb", "mae"])
 @pytest.mark.parametrize("kind", ["normal", "late_pause", "error"])
-def test_formal_cli_original_main_lifecycle(monkeypatch, mode, kind):
+def test_formal_cli_original_main_lifecycle(monkeypatch, tmp_path, mode, kind):
+    monkeypatch.setenv("MOLMO_CLIENT_LOG_DIR", str(tmp_path))
     prepare()
     from openpi_client import websocket_client_policy
 
@@ -200,6 +201,14 @@ def test_formal_cli_original_main_lifecycle(monkeypatch, mode, kind):
         assert len(context.requests) == 2
     assert context.actual_sends == context.real_hardware_initializations == 0
     assert all(np.isfinite(c["action"]).all() for c in context.candidates)
+    logs = list(tmp_path.glob(f"molmo-{mode}-client-*.log"))
+    assert len(logs) == 1
+    log_text = logs[0].read_text()
+    assert "Control config:" in log_text and "Policy metadata:" in log_text
+    assert '"event":"candidate"' in log_text and '"event":"sent"' not in log_text
+    assert "dropped_records=0" in log_text
+    if kind == "error":
+        assert "mock inference failure" in log_text and "Traceback" in log_text
     import torch
 
     assert not torch.cuda.is_initialized()
@@ -216,3 +225,31 @@ def test_original_mock_loader_still_rejects_motion(monkeypatch):
     )
     with pytest.raises(ValueError, match="hardware-mocked"):
         module.parse_args()
+
+
+@pytest.mark.parametrize("mode", ["rgb", "mae"])
+@pytest.mark.parametrize("kind", ["normal", "error"])
+def test_rtc_logs_original_control_and_error_cleanup(monkeypatch, tmp_path, mode, kind):
+    prepare()
+    import rtc_control_mock
+    from x5_client_logging import ClientRunLog
+
+    original_loader = rtc_control_mock.load_mock_main
+    with ClientRunLog(mode, ["--rtc"], tmp_path) as run:
+        def loader(*args, **kwargs):
+            module = original_loader(*args, **kwargs)
+            run.attach_control(module)
+            return module
+
+        monkeypatch.setattr(rtc_control_mock, "load_mock_main", loader)
+        result = rtc_control_mock.run_case(kind, samples(), mode, OPENPI)
+    text = run.path.read_text()
+    records = [json.loads(line.split("control_trace ", 1)[1])
+               for line in text.splitlines() if "control_trace {" in line]
+    assert "RTC episode=1 started" in text and "RTC request_ms=" in text
+    assert "max_joint_step_delta=0.0200" in text and "dropped_records=0" in text
+    assert len(records) == result["candidate_actions"]
+    assert all(r["event"] == "candidate" for r in records)
+    assert result["real_robot_initializations"] == result["actual_action_sends"] == 0
+    if kind == "error":
+        assert "injected RTC RPC failure" in text and "Traceback" in text
