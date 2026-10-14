@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import ast
 import importlib.util
-import sys
 import socket
+import sys
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -247,6 +247,9 @@ def load_control_main(openpi_root: Path, mode: str):
 
     def parse(**kwargs):
         args = _configure_rtc_defaults(original_parse(**kwargs))
+        flags = {arg.split("=", 1)[0] for arg in sys.argv[1:]}
+        if "--max-step-delta" not in flags:
+            args.max_step_delta = 0.1
         validate_hardware_control_args(args)
         return args
 

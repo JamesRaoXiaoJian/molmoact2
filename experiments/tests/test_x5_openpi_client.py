@@ -105,7 +105,7 @@ def test_original_motion_gates(monkeypatch, extra, allowed):
         )
         if args.rtc:
             assert args.rtc_queue_threshold == 18 and args.rtc_execution_horizon == 20
-        assert args.reject_first_joint_delta == 0.25 and args.max_step_delta == 0.02
+        assert args.reject_first_joint_delta == 0.25 and args.max_step_delta == 0.1
         assert args.max_gripper_step_delta == 0.1
 
 

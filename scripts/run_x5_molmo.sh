@@ -12,6 +12,8 @@ DRY_RUN=1 disables policy motion/reset; SDK hold/gain/damping still occur.
 Legacy server|client rgb|mae [arguments] remains supported.
 MOLMO_EXECUTION_MODE=rtc selects asynchronous RTC on the client (default: sync).
 RTC_QUEUE_THRESHOLD=18 RTC_EXECUTION_HORIZON=20 RTC_MAX_GUIDANCE_WEIGHT=10.
+Joint step limit: control.max_step_delta in the registry (deployed default 0.1 rad).
+Legacy/direct clients also default to 0.1 rad; --max-step-delta overrides it.
 Client Python logs and per-action traces are saved in logs/molmo-*-client-*.log.
 MOLMO_CLIENT_LOG_DIR overrides the log directory; motion parameters are unchanged.
 EOF

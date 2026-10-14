@@ -22,6 +22,11 @@ MODEL_SELECT=0 MOLMO_EXECUTION_MODE=rtc bash scripts/run_x5_molmo.sh client
 `MOLMO_EXECUTION_MODE=sync` 可恢复同步执行。直接 Python 客户端也支持 `--rtc`。
 实际客户端会初始化硬件并遵循原有运动开关；离线验证使用下面的 mock 入口。
 
+2026-10-14 按操作者要求，RGB/MAE 部署配置的 `control.max_step_delta` 均改为
+`0.1` rad，同步和 RTC 共用此关节单步限幅。旧式 `client rgb/mae` 和直接 Python
+入口在未显式传参时也使用 `0.1`。可用 `--max-step-delta=<值>` 显式覆盖；
+它不改变复位限幅、首动作拒绝阈值、夹爪参数或模型的 q01/q99 归一化边界。
+
 可选的编译设置在**服务端**启用：
 
 ```bash
