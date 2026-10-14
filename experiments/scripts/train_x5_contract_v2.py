@@ -23,6 +23,36 @@ NAMES = [
 ]
 
 
+def validate_native_weight_shapes(model_config, checkpoint):
+    """Compare real module and saved tensor shapes without allocating weight storage."""
+    path = Path(checkpoint) / "model.pt"
+    if not path.is_file():
+        return  # Released HF weights use the separate HF loader.
+    import torch
+    from torch._subclasses.fake_tensor import FakeTensorMode
+
+    with torch.device("meta"):
+        model = model_config.build_model()
+    expected = {key: tuple(value.shape) for key, value in model.state_dict().items()}
+    del model
+    with FakeTensorMode():
+        saved = torch.load(path, map_location="cpu", mmap=True, weights_only=True)
+    actual = {key: tuple(value.shape) for key, value in saved.items()}
+    mismatches = {
+        key: {"model": expected.get(key), "checkpoint": actual.get(key)}
+        for key in expected.keys() | actual.keys()
+        if expected.get(key) != actual.get(key)
+    }
+    if mismatches:
+        raise ValueError(
+            f"Native checkpoint shape mismatch before FSDP: {dict(list(mismatches.items())[:8])}"
+        )
+    print(
+        f"Validated {len(actual)} native checkpoint tensor shapes before FSDP",
+        flush=True,
+    )
+
+
 def register_recipe(mode, manifest):
     if mode not in ("rgb", "mae"):
         raise ValueError("Expected rgb or mae")
@@ -106,6 +136,7 @@ def main():
             raise ValueError(
                 "X5 v2 recipe uses discrete state and continuous native absolute actions"
             )
+        validate_native_weight_shapes(cfg.model, checkpoint)
         # A true held-out partition only for initialization that did not see our old 337 episodes.
         warmstart = os.environ.get("X5_INITIALIZATION") == "warmstart"
         label = "regression_seen_val" if warmstart else "validation"

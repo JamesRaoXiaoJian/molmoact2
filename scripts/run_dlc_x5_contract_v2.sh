@@ -6,15 +6,16 @@ case "$INIT" in warmstart) STEPS=5000; LLM_LR=3e-6; VIT_LR=1.5e-6; ACTION_LR=1.5
 case "$MODE" in rgb|mae) ;; *) exit 2;; esac
 PROJECT=/root/RXJ/molmoact2
 COHORT="$PROJECT/outputs/dlc/x5_contract_v2_20261014"
-CODE="$COHORT/code"
+CODE=${MOLMOACT2_TRAINING_CODE:-"$COHORT/code"}
+CODE_REVISION=${MOLMOACT2_CODE_REVISION:-"$COHORT/code_revision.json"}
 PYTHON="$PROJECT/.venv/bin/python"
-RUN_NAME="molmoact2-x5-v2-${MODE}-${INIT}${STEPS}-b64-s42-20261014"
+RUN_NAME="molmoact2-x5-v2-${MODE}-${INIT}${STEPS}-b64-s42-20261014${X5_RUN_SUFFIX:-}"
 RUN_DIR="$PROJECT/outputs/runs/$RUN_NAME"
 MODEL="$PROJECT/artifacts/models/MolmoAct2"
 if [[ "$INIT" == warmstart ]]; then
   MODEL="$PROJECT/outputs/runs/molmoact2-x5-cleaned-${MODE}-fft20k-b64-s42-20261008/checkpoints/step20000-unsharded"
 fi
-[[ -f "$COHORT/code_revision.json" && -f "$CODE/experiments/scripts/train_x5_contract_v2.py" ]]
+[[ -f "$CODE_REVISION" && -f "$CODE/experiments/scripts/train_x5_contract_v2.py" ]]
 mkdir -p "$RUN_DIR"
 [[ ! -e "$RUN_DIR/training_started.json" ]] || { echo "Run already started; use explicit resume or a new run." >&2; exit 1; }
 exec > >(tee -a "$RUN_DIR/launcher.log") 2>&1
@@ -37,10 +38,10 @@ LOCAL_ROOT=/dev/shm/molmoact2_x5_contract_v2
 "$PYTHON" "$CODE/experiments/scripts/prepare_x5_cleaned_comparison.py" --mode "$MODE" \
   --cohort "$COHORT" --run-dir "$RUN_DIR" --local-root "$LOCAL_ROOT" --stage
 export LEROBOT_DATA_ROOT="$LOCAL_ROOT/data" LEROBOT_PACKED_IMAGE_ROOT="$LOCAL_ROOT/packed"
-"$PYTHON" - "$RUN_DIR" "$COHORT" "$INIT" "$MODEL" "$STEPS" <<'PY'
+"$PYTHON" - "$RUN_DIR" "$COHORT" "$INIT" "$MODEL" "$STEPS" "$CODE_REVISION" <<'PY'
 import json,sys,torch
 from pathlib import Path
-run,cohort,init,checkpoint,steps=sys.argv[1:]
+run,cohort,init,checkpoint,steps,code_revision=sys.argv[1:]
 if torch.cuda.device_count()!=8:
     raise SystemExit('Expected eight A800 GPUs')
 devices=[{'index':i,'name':torch.cuda.get_device_name(i),'memory_gib':torch.cuda.get_device_properties(i).total_memory/2**30} for i in range(8)]
@@ -48,7 +49,7 @@ if any('A800' not in d['name'] or d['memory_gib']<74 for d in devices):
     raise SystemExit(f'Unexpected GPUs: {devices}')
 Path(run,'devices.json').write_text(json.dumps(devices,indent=2))
 receipt={'initialization':init,'checkpoint':checkpoint,'steps':int(steps),'global_batch':64,'seed':42,
-         'cohort':str(cohort),'code':json.loads(Path(cohort,'code_revision.json').read_text()),
+         'cohort':str(cohort),'code':json.loads(Path(code_revision).read_text()),
          'validation_seen_by_initialization':init=='warmstart'}
 Path(run,'recipe.json').write_text(json.dumps(receipt,indent=2))
 print(receipt,flush=True)

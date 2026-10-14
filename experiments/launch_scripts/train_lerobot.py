@@ -71,6 +71,7 @@ from olmo.models.molmo.data_formatter import DataFormatter
 from olmo.models.molmo.molmo import MolmoConfig
 from olmo.models.molmo.molmo_preprocessor import MolmoPreprocessorConfig
 from olmo.models.molmoact2.molmoact2 import MolmoAct2Config
+from olmo.models.model_config import BaseModelConfig
 from olmo.models.molmo2.molmo2_preprocessor import Molmo2PreprocessorConfig
 from olmo.nn.vision_backbone import MolmoVisionBackboneConfig
 from olmo.preprocessing.multicrop_preprocessor import MultiCropConfig
@@ -123,9 +124,14 @@ def get_model(checkpoint, model, frame_loading_backend: str = "torchcodec_exact"
             get_hf_model_config(checkpoint, frame_loading_backend=frame_loading_backend)
         )
     elif file_exists(join(checkpoint, "model.yaml")):
-        model_cfg = MolmoConfig.load(join(checkpoint, "model.yaml"))
+        model_cfg = BaseModelConfig.load(join(checkpoint, "model.yaml"))
     else:
-        model_cfg = MolmoConfig.load(join(checkpoint, "config.yaml"), key="model")
+        model_cfg = BaseModelConfig.load(join(checkpoint, "config.yaml"), key="model")
+
+    if isinstance(model_cfg, MolmoAct2Config):
+        # A native action checkpoint already defines its learned expert topology.
+        # Rebuilding it as a generic VLM discards fields such as mlp_ratio=4.0.
+        return _apply_lerobot_molmoact2_defaults(model_cfg, preserve_action_expert=True)
 
     video_pre_processor_cfg = Molmo2PreprocessorConfig(
         use_col_tokens=False,

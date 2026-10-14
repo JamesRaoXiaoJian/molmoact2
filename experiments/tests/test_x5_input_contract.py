@@ -105,6 +105,47 @@ def test_hf_and_native_normalization_contracts_match():
         )
 
 
+@pytest.mark.parametrize("filename", ["model.yaml", "config.yaml"])
+def test_native_finetuning_preserves_checkpoint_action_expert(tmp_path, filename):
+    from launch_scripts.train_lerobot import get_model
+    from olmo.models.molmoact2.molmoact2 import MolmoAct2Config
+    from olmo.models.molmo2.molmo2_preprocessor import Molmo2PreprocessorConfig
+    from olmo.preprocessing.multicrop_preprocessor import MultiCropConfig
+    from olmo.nn.action_expert import ActionExpertConfig
+
+    cfg = MolmoAct2Config(
+        mm_preprocessor=Molmo2PreprocessorConfig(image=MultiCropConfig()),
+        action_expert=ActionExpertConfig(
+            hidden_size=128, num_heads=4, num_layers=3, mlp_ratio=4.0
+        ),
+    )
+    import textwrap
+
+    cfg.save(tmp_path / filename)
+    if filename == "config.yaml":
+        path = tmp_path / filename
+        path.write_text("model:\n" + textwrap.indent(path.read_text(), "  "))
+    loaded = get_model(str(tmp_path), "video")
+    assert loaded.action_expert.mlp_ratio == 4.0
+    assert loaded.action_expert.hidden_size == 128
+    assert loaded.action_expert.num_heads == 4
+    assert loaded.action_expert.num_layers == 3
+
+
+def test_native_weight_preflight_rejects_changed_layer_width(tmp_path):
+    import torch
+    from scripts.train_x5_contract_v2 import validate_native_weight_shapes
+
+    torch.save(torch.nn.Linear(3, 4).state_dict(), tmp_path / "model.pt")
+    validate_native_weight_shapes(
+        SimpleNamespace(build_model=lambda: torch.nn.Linear(3, 4)), tmp_path
+    )
+    with pytest.raises(ValueError, match="shape mismatch before FSDP"):
+        validate_native_weight_shapes(
+            SimpleNamespace(build_model=lambda: torch.nn.Linear(3, 2)), tmp_path
+        )
+
+
 def test_client_snapshots_original_rgb_and_tactile_without_changing_geometry():
     rgb = np.full((480, 640, 3), 123, np.uint8)
     tactile = np.full((288, 384, 3), 42, np.uint8)

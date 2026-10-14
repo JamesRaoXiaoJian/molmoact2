@@ -300,7 +300,7 @@ def get_hf_model_config(checkpoint: str, frame_loading_backend: str = "torchcode
     )
 
 
-def _apply_lerobot_molmoact2_defaults(model_cfg: MolmoAct2Config) -> MolmoAct2Config:
+def _apply_lerobot_molmoact2_defaults(model_cfg: MolmoAct2Config, *, preserve_action_expert: bool = False) -> MolmoAct2Config:
     # Fine-tuning settings
     model_cfg.llm.residual_dropout = 0.1
     model_cfg.llm.response_residual_dropout = 0.0
@@ -326,9 +326,10 @@ def _apply_lerobot_molmoact2_defaults(model_cfg: MolmoAct2Config) -> MolmoAct2Co
     model_cfg.vision_backbone.normalize_on_gpu = True
 
     # Action expert settings
-    model_cfg.action_expert.num_layers = model_cfg.llm.n_layers
-    model_cfg.action_expert.hidden_size = 768
-    model_cfg.action_expert.num_heads = 8
+    if not preserve_action_expert:
+        model_cfg.action_expert.num_layers = model_cfg.llm.n_layers
+        model_cfg.action_expert.hidden_size = 768
+        model_cfg.action_expert.num_heads = 8
     model_cfg.action_expert.max_horizon = max(
         model_cfg.action_expert.max_horizon, model_cfg.action_horizon
     )
