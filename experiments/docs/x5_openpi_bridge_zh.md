@@ -33,7 +33,10 @@ client 沿用原启动器内部 `MOVE_X5` 确认、启动保存姿态复位和�
 checkpoint 指向含 `model.pt`、`config.yaml` 的 native 目录；归一化 tag 必须存在于该
 checkpoint，tokenizer 资产须与训练配置匹配；任务文本来自对应数据元信息。
 当前适配面为相同 X5 三路 RGB（MAE两路单帧触觉）、14维绝对关节动作、30动作 horizon、
-native 默认 n_action_steps=5、normalize_gripper=false。不同结构/动作空间需要额外适配。
+native 默认 n_action_steps=5。旧 checkpoint 为 normalize_gripper=false；
+新训练 `x5-native-v2` 通过独立 state/action 规范归一化全部 14 维，并随权重保存。
+服务端核验字段顺序、单位与规范版本，不会为旧 checkpoint 自动替换统计量。
+不同结构/动作空间需要额外适配。
 无需为同结构的新 id 改脚本分支，仅将脚本默认 MODEL_SELECT 或环境变量改成该 id。
 
 控制默认 30Hz、消费5步、同步是本地 X5 数据/checkpoint 与已验证接口的兼容起点，
@@ -89,9 +92,13 @@ OpenPI 原硬件客户端的构造/退出会发送保持、增益或 damping，�
 输入 state 严格为有限 `float32(14,)`，顺序为左 6 关节＋左夹爪＋右 6 关节＋右夹爪；
 prompt 为非空字符串。`left_image/right_image/head_image` 对应
 `left_d405/right_d405/head_camera`，三路都必需，HWC RGB uint8。
-现有 OpenPI 观测函数先将 RGB resize-with-pad 到 224×224；适配层不再缩放，
-Molmo 原模型预处理继续处理收到的图像。与原始高分辨率回放的像素输入不同，
-一致性验收比较的是同一份客户端图像在直接 Molmo 与网络适配路径上的输出。
+服务端 `MOLMO_INPUT_CONTRACT=auto` 为默认：旧 checkpoint 保留 224 补边与原始文本；
+新 `x5-native-v2` checkpoint 自动声明原始 RGB 和统一任务文本清理，客户端按 metadata 选择。
+可在旧模型服务端显式设置 `MOLMO_INPUT_CONTRACT=aligned` 做输入对齐对照，客户端命令不变。
+旧权重扩大回放中，输入对齐降低关节误差但提高了夹爪误差，因此没有自动替换旧模型默认行为。
+新规范保存相机原始 RGB 几何并复制缓冲区，只由模型完成 resize；OpenPI 自身函数保持独立。
+离线评估默认使用 aligned/native；历史对照同时传
+`--rgb-geometry=legacy_224_pad --input-contract=legacy`。
 
 MAE 必需 `left_gripper_left_tactile/right_gripper_right_tactile`，保留原始 HWC 尺寸；
 最终模型只有 1 帧触觉，THWC 多帧、其他触觉路由、缺失触觉均显式拒绝。

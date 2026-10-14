@@ -162,7 +162,12 @@ def run(args):
     rows = {int(e): np.flatnonzero(ep == e) for e in np.unique(ep)}
     for indices in rows.values():
         assert np.array_equal(frame[indices], np.arange(len(indices)))
-    episodes = np.linspace(0, len(rows) - 1, min(args.episodes, len(rows)), dtype=int)
+    available = np.array(sorted(rows))
+    if args.split_manifest:
+        available = np.array(json.loads(args.split_manifest.read_text())["splits"][args.split], dtype=int)
+        if not len(available) or len(set(available)) != len(available) or not set(available).issubset(rows):
+            raise ValueError("Split must contain unique existing episode IDs")
+    episodes = available[np.linspace(0, len(available)-1, min(args.episodes, len(available)), dtype=int)]
     samples = []
     for episode in episodes:
         for bucket, fraction in enumerate((0.1, 0.5, 0.9)):
@@ -178,7 +183,11 @@ def run(args):
                 }
             )
     protocol = {
-        "scope": "Training-data replay: all 337 episodes were used for training; not held-out or closed-loop",
+        "scope": "Recorded-observation replay, not closed-loop. Held-out status depends on checkpoint training provenance; legacy step20000 saw all 337 episodes.",
+        "split": args.split if args.split_manifest else "all",
+        "split_manifest": str(args.split_manifest) if args.split_manifest else None,
+        "checkpoint": str(args.checkpoint) if args.checkpoint else "legacy step20000",
+        "norm_tag": args.norm_tag,
         "sample_count": len(samples),
         "episodes": len(episodes),
         "flow_steps": 10,
@@ -186,8 +195,9 @@ def run(args):
         "optimization": "graph",
         "compile_action_blocks": False,
         "action_horizon": 30,
-        "rgb_resize": [224, 224],
-        "prompt": "recorded dataset task",
+        "rgb_geometry": args.rgb_geometry,
+        "input_contract": args.input_contract,
+        "prompt": "shared training canonicalization" if args.input_contract == "aligned" else "legacy raw dataset task",
         "moving_component_threshold_rad": 0.03,
         "seed": args.seed,
         "rtc": {
@@ -217,19 +227,21 @@ def run(args):
         assert 0 <= f and f + 30 <= len(indices)
         images = reader.query(meta, {key: [f / meta.fps] for key in keys}, int(episode))
         obs = {key: im.permute(1, 2, 0).numpy() for key, im in images.items()}
-        for key in X5_RGB_IMAGE_KEYS:
-            obs[key] = image_tools.resize_with_pad(obs[key], 224, 224)
+        if args.rgb_geometry == "legacy_224_pad":
+            for key in X5_RGB_IMAGE_KEYS:
+                obs[key] = image_tools.resize_with_pad(obs[key], 224, 224)
         obs["observation.state"] = state[indices[f]].copy()
         obs["task"] = tasks[int(task[indices[f]])]
         return obs, action[indices[f : f + 30]].copy()
 
     os.environ["MOLMO_NATIVE_OPTIMIZATION"] = "graph"
     os.environ["MOLMO_COMPILE_ACTION_EXPERT"] = "0"
+    os.environ["MOLMO_INPUT_CONTRACT"] = args.input_contract
     print(
         json.dumps({"stage": "loading", "mode": args.mode, "samples": len(samples)}),
         flush=True,
     )
-    bridge = guarded.build_bridge(args.mode)
+    bridge = guarded.build_bridge(args.mode, checkpoint=args.checkpoint, norm_tag=args.norm_tag)
     policy = bridge.molmo.policy
     print(json.dumps({"stage": "loaded", "mode": args.mode}), flush=True)
     first, _ = observation(samples[0]["episode"], samples[0]["frame"])
@@ -289,7 +301,7 @@ def run(args):
         [],
     )
     rtc_observations = []
-    rtc_episodes = np.linspace(0, len(rows) - 1, args.rtc_episodes, dtype=int)
+    rtc_episodes = available[np.linspace(0, len(available)-1, min(args.rtc_episodes, len(available)), dtype=int)]
     for group, episode in enumerate(rtc_episodes):
         needed = 30 + 12 * (args.rtc_requests - 1)
         start = int((len(rows[int(episode)]) - needed) * 0.5)
@@ -666,5 +678,11 @@ if __name__ == "__main__":
     parser.add_argument("--rtc-episodes", type=int, default=8)
     parser.add_argument("--rtc-requests", type=int, default=8)
     parser.add_argument("--seed", type=int, default=20261014)
+    parser.add_argument("--rgb-geometry", choices=("native", "legacy_224_pad"), default="native")
+    parser.add_argument("--input-contract", choices=("aligned", "legacy"), default="aligned")
+    parser.add_argument("--checkpoint")
+    parser.add_argument("--norm-tag")
+    parser.add_argument("--split-manifest", type=Path)
+    parser.add_argument("--split", choices=("train", "val", "test"), default="val")
     arguments = parser.parse_args()
     (summarize if arguments.mode == "summarize" else run)(arguments)

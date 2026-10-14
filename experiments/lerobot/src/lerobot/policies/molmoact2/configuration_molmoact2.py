@@ -40,6 +40,7 @@ class MolmoAct2Config(PreTrainedConfig):
     norm_tag: str = ""
     # Native checkpoints only: cast on meta before allocating device memory.
     parameter_dtype: Optional[str] = None
+    normalize_task: Optional[bool] = None  # None: checkpoint contract; old native weights keep original text.
     # Override machine-specific tokenizer cache paths without editing checkpoints.
     tokenizer_dir: Optional[str] = None
 

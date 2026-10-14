@@ -7,8 +7,32 @@ import importlib.util
 import socket
 import sys
 import threading
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
+
+import numpy as np
+
+
+def build_molmo_observation(*, state, prompt, left_camera, right_camera,
+                            base_camera=None, head_camera=None, tactile_cameras=None,
+                            rgb_geometry="native"):
+    """Snapshot native RGB geometry; the checkpoint owns the only image resize."""
+    observation = {"state": np.asarray(state).copy(), "prompt": prompt}
+    cameras = {"left_image": left_camera, "right_image": right_camera}
+    if base_camera is not None:
+        cameras["base_image"] = base_camera
+    if head_camera is not None:
+        cameras["head_image"] = head_camera
+    cameras.update(tactile_cameras or {})
+    for key, camera in cameras.items():
+        observation[key] = np.asarray(camera.read()).copy()
+        if key in {"left_image", "right_image", "head_image", "base_image"} and rgb_geometry == "legacy_224_pad":
+            from openpi_client import image_tools
+            observation[key] = image_tools.resize_with_pad(observation[key], 224, 224)
+    if rgb_geometry not in {"native", "legacy_224_pad"}:
+        raise ValueError(f"Unsupported Molmo RGB geometry {rgb_geometry!r}")
+    return observation
 
 
 class EpisodePolicy:
@@ -169,6 +193,7 @@ def _load_episode_main(openpi_root: Path):
     # Only replace this loaded control module's engine reference. No edits or
     # global monkeypatches to the user's OpenPI package/hardware implementation.
     module.rtc_client = SimpleNamespace(RTCInferenceEngine=RTCInferenceEngine)
+    module.build_policy_observation = partial(build_molmo_observation, rgb_geometry="legacy_224_pad")
     original = ast.parse(path.read_text())
     main = next(
         n for n in original.body if isinstance(n, ast.FunctionDef) and n.name == "main"
@@ -265,7 +290,12 @@ def load_control_main(openpi_root: Path, mode: str):
         def factory(*args, **kwargs):
             client = original_type(*args, **kwargs)
             clients.append(client)
-            return EpisodePolicy(client, mode)
+            policy = EpisodePolicy(client, mode)
+            geometry = policy.metadata.get("rgb_geometry", "legacy_224_pad")
+            if geometry not in {"native", "legacy_224_pad"}:
+                raise ValueError(f"Unsupported server RGB geometry {geometry!r}")
+            module.build_policy_observation = partial(build_molmo_observation, rgb_geometry=geometry)
+            return policy
 
         websocket_client_policy.WebsocketClientPolicy = factory
         try:

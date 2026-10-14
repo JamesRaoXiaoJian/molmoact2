@@ -98,6 +98,7 @@ class OpenPIBridge:
             "action_index_0_frame_offset": 0,
             "camera_order": ["left_d405", "right_d405", "head_camera"],
             "image_layout": "HWC RGB uint8",
+            "rgb_geometry": "legacy_224_pad",
             "tactile_inputs": mode == "mae",
             "tactile_keys": list(TACTILE_KEYS) if mode == "mae" else [],
             "tactile_backend": "tactile_mae" if mode == "mae" else None,
@@ -266,12 +267,28 @@ def build_bridge(mode, checkpoint=None, norm_tag=None, tokenizer_dir=None):
         "action_horizon": 30,
         "n_action_steps": 5,
         "control_mode": "absolute joint pose",
-        "normalize_gripper": False,
     }.items():
         if metadata.get(key) != expected:
             raise ValueError(
                 f"Checkpoint {key}={metadata.get(key)!r}, expected {expected!r}"
             )
+    contract = metadata.get("input_contract")
+    if contract is not None:
+        if contract.get("version") != "x5-native-v2" or contract.get("state_names") != ACTION_NAMES or contract.get("action_names") != ACTION_NAMES:
+            raise ValueError("Unsupported X5 input contract or field order")
+        if contract.get("joint_units") != "rad" or contract.get("gripper_units") != "calibrated native motor angle rad":
+            raise ValueError("X5 contract must use native state/action units")
+        if metadata.get("normalize_gripper") is not True or metadata.get("normalization", {}).get("version") != 2:
+            raise ValueError("X5 v2 requires explicit gripper and feature normalization")
+    elif metadata.get("normalize_gripper") is not False:
+        raise ValueError("Non-legacy normalization requires an explicit X5 input contract")
+    input_setting = os.environ.get("MOLMO_INPUT_CONTRACT", "auto")
+    if input_setting not in {"auto", "aligned", "legacy"}:
+        raise ValueError("MOLMO_INPUT_CONTRACT must be auto, aligned or legacy")
+    if contract is not None and input_setting == "legacy":
+        raise ValueError("X5 v2 checkpoints require their aligned input contract")
+    aligned = contract is not None or input_setting == "aligned"
+    molmo.policy.config.normalize_task = aligned
     handles = getattr(getattr(molmo, "policy", None), "_handles", None)
     if handles is not None:
         handles.model.native_inference_optimization = optimization
@@ -283,6 +300,10 @@ def build_bridge(mode, checkpoint=None, norm_tag=None, tokenizer_dir=None):
         raise ValueError("Action block compilation requires the native checkpoint backend")
     bridge = OpenPIBridge(molmo, mode, enable_rtc=handles is not None)
     bridge.metadata["norm_tag"] = tag
+    bridge.metadata["input_contract"] = contract or {"version": "x5-native-legacy"}
+    bridge.metadata["normalization"] = metadata.get("normalization", {"version": 1})
+    bridge.metadata["rgb_geometry"] = "native" if aligned else "legacy_224_pad"
+    bridge.metadata["task_normalization"] = "robot_text_v1" if aligned else "legacy_raw"
     bridge.metadata["native_inference_optimization"] = (
         optimization if handles is not None else "hf_backend"
     )

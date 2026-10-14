@@ -1,5 +1,57 @@
 # 0918–20 cleaned：RGB 与 Tactile-MAE 对照
 
+## 2026-10-14：输入规范 v2 修复实验
+
+旧 20k checkpoint 的夹爪状态没有归一化，却进入 `[-1,1]` 的 256 档离散编码；
+关节 q01/q99 硬裁剪也丢失了极值目标。v2 使用独立的状态/动作归一化声明：
+全部 14 维按训练轨迹的 min/max 缩放；状态在离散编码边界裁剪，连续动作缩放与
+反变换不裁剪。统计范围不替代机器人限位。所有物理量仍是原生角度，动作仍是绝对目标。
+没有 `normalization` 声明的旧 native checkpoint 继续使用原规则。
+
+训练与推理共享 `olmo/data/robot_text.py` 的任务清理逻辑；客户端发送原始 RGB，
+由 checkpoint 的 SigLIP 执行 resize。episode 末尾复制帧通过 `action_is_pad` 排除监督。
+该输入对齐按 checkpoint 的 v2 metadata 自动启用。旧模型默认保持历史输入；
+服务端显式 `MOLMO_INPUT_CONTRACT=aligned` 可作对照。1011 个观测的 RGB 回放显示
+关节 MAE 从 0.888° 降到 0.675°，但右夹爪 MAE 从 0.0254 升到 0.0450 rad，
+因此不能把输入修复单独认定为旧模型抓取性能升级，必须配套训练与分项验收。
+
+新 cohort：`outputs/dlc/x5_contract_v2_20261014`。使用数据已有的整 episode 时间顺序划分：
+训练 269 条 / 299,228 帧，验证 33 条 / 41,116 帧，测试 35 条 / 42,078 帧。
+只读取既有 split 的 episode ID，不使用 subtask/phase 标签。验证与测试均为 task 1，
+属于后段轨迹评估，不能代表两个任务的均衡泛化。统计量只由训练分区拟合。
+原 20k 权重见过全部 337 条，因此其验证分区指标明确命名为 `regression_seen_val`。
+
+首轮各 8×A800、global batch 64，先 RGB 比较两种初始化：
+
+| 初始化 | 更新步 | LLM / ViT / connector / action expert LR | 验证指标 |
+|---|---:|---|---|
+| 旧 RGB step20000 适配 | 5,000 | 3e-6 / 1.5e-6 / 1.5e-6 / 1.5e-5 | 已见数据回归 |
+| 官方 MolmoAct2 基座 | 20,000 | 1e-5 / 5e-6 / 5e-6 / 5e-5 | 未参与本次训练的验证轨迹 |
+
+两者都保持连续动作、256 档状态、30 帧 horizon、4 个训练 flow 时间样本、全参数微调，
+warmup 200、每 1,000 步验证和保存 checkpoint。2 步 8 卡 smoke 同时验证数据、反传和
+验证循环，成功后才启动正式 W&B run。5000/20000 是筛选预算，不保证最佳收敛点。
+后续 RGB/MAE 正式对照应采用相同的新规范和划分，按回放与实机结果选择初始化。
+
+```bash
+# 数据准备仅执行一次，不覆盖既有 cohort。
+python experiments/scripts/prepare_x5_contract_v2.py \
+  --previous outputs/dlc/x5_cleaned_ablation_20261008 \
+  --output outputs/dlc/x5_contract_v2_20261014
+python experiments/scripts/validate_x5_contract_v2.py \
+  --cohort outputs/dlc/x5_contract_v2_20261014 \
+  --output outputs/dlc/x5_contract_v2_20261014/preflight.json
+# DLC 使用已提交代码的不可变快照 code/；code_revision.json 记录 SHA。
+bash scripts/run_dlc_x5_contract_v2.sh warmstart rgb
+bash scripts/run_dlc_x5_contract_v2.sh base rgb
+```
+
+W&B 项目 `molmoact2-x5-input-contract-v2`。训练 loss 首屏，真实验证/回归 loss 产生后
+才添加图表，再排列进度、LR/梯度、速度/显存。不展示 gate、phase 或零值语言损失。
+不同归一化下的 loss 不能直接与旧 run 数值横比；部署决策以原生单位误差和抓取成功率为准。
+
+以下为 2026-10-08 初版对照的历史记录。
+
 两个作业各使用一台 8×A800 80GB 节点，从同一份本地
 `allenai/MolmoAct2` 基座继续全参数微调，不混入 VLM 数据，不添加 gate／subtask。
 数据为全部 337 条轨迹、382,422 帧：

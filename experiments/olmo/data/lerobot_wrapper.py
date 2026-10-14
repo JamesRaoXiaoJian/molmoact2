@@ -120,6 +120,7 @@ from olmo.data.robot_processing import (
     RobotProcessor,
     RobotProcessorConfig,
 )
+from olmo.data.robot_text import normalize_robot_task as _normalize_question_text
 
 from olmo.data.dataset import Dataset
 from olmo.preprocessing.sequence_length_utils import MalformedExampleError
@@ -137,9 +138,6 @@ _ANNOTATED_TASK_WARNING_KEYS: set[Tuple[str, str]] = set()
 _ANNOTATED_TASKS_CACHE: Dict[Tuple[str, str], Optional[Dict[int, Any]]] = {}
 _TASK_TO_EPISODE_CACHE: Dict[Tuple[str, str], Optional[Dict[int, np.ndarray]]] = {}
 _FRAME_COUNT_MISMATCH_WARNING_KEYS: set[Tuple[str, str, int, int]] = set()
-_QUESTION_TRAILING_SENTENCE_PUNCTUATION = ".,!?;:,…"
-_QUESTION_TRAILING_CLOSERS = "\"'”’)]}"
-_QUESTION_SURROUNDING_DELIMITERS = "\"'`“”‘’[](){}"
 _ANNOTATED_TASKS_FILENAME = "tasks_annotated.parquet"
 _ANNOTATED_TASKS_INDEX_NAME = "episode_index"
 _ANNOTATED_TASKS_COLUMN_NAME = "task"
@@ -148,13 +146,6 @@ _TASK_TO_EPISODE_TASK_INDEX_COLUMN = "task_index"
 _TASK_TO_EPISODE_EPISODE_INDEX_COLUMN = "episode_index"
 _FROZEN_TASK_SENTINEL = "<ALL FROZEN FRAMES>"
 _DEPTH_DATASET_SUFFIX = "_depth"
-_QUESTION_PREFIX_PATTERNS = tuple(
-    re.compile(pattern, flags=re.IGNORECASE)
-    for pattern in (
-        r"^(?:task|instruction|language[_ ]instruction|goal)\s*[:\-]\s*",
-        r"^(?:the\s+task\s+is\s+to|your\s+task\s+is\s+to)\s+",
-    )
-)
 
 
 def _should_retry_lerobot_torchcodec_packet_error(exc: Exception) -> bool:
@@ -373,26 +364,6 @@ def _sample_rng_index(rng: np.random.Generator, high: int) -> int:
     if hasattr(rng, "randint"):
         return int(rng.randint(0, high))
     raise TypeError(f"Unsupported RNG object {type(rng)!r}: missing integers()/randint().")
-
-
-def _normalize_question_text(text: str) -> str:
-    normalized = re.sub(r"\s+", " ", text).strip()
-    if not normalized:
-        return ""
-    previous = None
-    while normalized and normalized != previous:
-        previous = normalized
-        normalized = normalized.strip().strip(_QUESTION_SURROUNDING_DELIMITERS).strip()
-        for pattern in _QUESTION_PREFIX_PATTERNS:
-            normalized = pattern.sub("", normalized, count=1).strip()
-        normalized = normalized.rstrip(_QUESTION_TRAILING_SENTENCE_PUNCTUATION).rstrip()
-        normalized = normalized.rstrip(_QUESTION_TRAILING_CLOSERS).rstrip()
-        normalized = normalized.rstrip(_QUESTION_TRAILING_SENTENCE_PUNCTUATION).rstrip()
-    sentence_chunks = [chunk.strip() for chunk in re.split(r"[.!?]+", normalized) if chunk.strip()]
-    if len(sentence_chunks) > 1:
-        normalized = "; ".join(sentence_chunks)
-    normalized = normalized.lower()
-    return normalized
 
 
 @dataclass
@@ -2757,6 +2728,14 @@ class LeRobotDatasetWrapper(Dataset):
                 tag_action_horizon=self.tag_action_horizon,
                 max_action_horizon=self.max_action_horizon,
             )
+            dataset_pad = _combine_pad_masks(field_metadata.get("action_keys"), frame)
+            if dataset_pad is not None and action_time_is_pad is not None:
+                if dataset_pad.shape != (self.tag_action_horizon,):
+                    raise ValueError(
+                        f"Expected episode action pad mask {(self.tag_action_horizon,)}, "
+                        f"got {dataset_pad.shape}."
+                    )
+                action_time_is_pad[:self.tag_action_horizon] |= dataset_pad
             action, action_dim_is_pad = self._pad_action_to_max_dim(action, repo_id)
         if state is None and not self._warned_missing_state:
             log.warning("LeRobot example does not contain any state vectors")

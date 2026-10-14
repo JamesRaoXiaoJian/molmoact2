@@ -312,6 +312,7 @@ def _build_example(
     control_mode: str = "",
     add_setup_tokens: bool = False,
     add_control_tokens: bool = False,
+    normalize_task: bool = True,
 ) -> Dict[str, Any]:
     # Do not attach a top-level "prompt": DataFormatter treats that as a fully
     # formatted prompt and skips the robot-style templating path used in training.
@@ -323,6 +324,7 @@ def _build_example(
 
     prompt_fields = build_prompt_fields(
         task=task,
+        normalize_task=normalize_task,
         style=style,
         normalized_states=normalized_state if state_format in {"discrete", "both"} else None,
         setup_type=setup_type,
@@ -1108,6 +1110,10 @@ class MolmoAct2Policy(PreTrainedPolicy):
             control_mode=str(robot_metadata.get("control_mode", "") or ""),
             add_setup_tokens=handles.add_setup_tokens,
             add_control_tokens=handles.add_control_tokens,
+            normalize_task=(
+                self.config.normalize_task if self.config.normalize_task is not None
+                else robot_metadata.get("input_contract", {}).get("task_normalization") == "robot_text_v1"
+            ),
         )
         if image_augmentation_mask is not None:
             combined["image_augmentation_mask"] = image_augmentation_mask

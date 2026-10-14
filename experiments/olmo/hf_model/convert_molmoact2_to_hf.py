@@ -239,7 +239,9 @@ def _save_norm_stats(model_config: BaseModelConfig, output_dir: str) -> None:
         cleaned_metadata.pop("repo_ids", None)
         metadata_by_tag[str(tag)] = cleaned_metadata
     payload = {
-        "format": "molmoact2_norm_stats.v1",
+        "format": "molmoact2_norm_stats.v2" if any(
+            metadata.get("normalization") is not None for metadata in metadata_by_tag.values()
+        ) else "molmoact2_norm_stats.v1",
         "norm_mode": str(getattr(proc_cfg, "norm_mode", "min_max")),
         "metadata_by_tag": _json_safe(metadata_by_tag),
     }

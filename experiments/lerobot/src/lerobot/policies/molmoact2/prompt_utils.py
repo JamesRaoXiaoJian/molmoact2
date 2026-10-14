@@ -15,6 +15,7 @@ from olmo.extra_tokens import (
     build_robot_prompt_fields,
 )
 from olmo.models.molmo.data_formatter import DataFormatter
+from olmo.data.robot_text import normalize_robot_task
 
 DEFAULT_PROMPT_TEMPLATES = "uber_model_v2"
 DEFAULT_MESSAGE_FORMAT = "qwen3"
@@ -91,6 +92,7 @@ def build_prompt_fields(
     add_setup_tokens: bool = False,
     add_control_tokens: bool = False,
     extra_message_fields: Optional[Dict[str, Any]] = None,
+    normalize_task: bool = True,
 ) -> Dict[str, Any]:
     task_text = str(task or "")
     style_text = str(style or "")
@@ -102,6 +104,8 @@ def build_prompt_fields(
         )
 
     if style_text in ROBOT_OUTPUT_STYLES:
+        if normalize_task:
+            task_text = normalize_robot_task(task_text)
         prompt_fields: Dict[str, Any] = build_robot_prompt_fields(
             task_text,
             style=style_text,

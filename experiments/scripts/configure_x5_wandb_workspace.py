@@ -45,9 +45,9 @@ def load_view(node, entity, project):
     )
 
 
-def make_sections(keys, runs, gpu_keys):
+def make_sections(keys, runs, gpu_keys, *, target_label="20,000", recipe_text=None):
     titles = {
-        f"{r.id}:{key}": f"{'Tactile-MAE' if '-mae-' in r.name else 'RGB'} / {key}"
+        f"{r.id}:{key}": f"{r.name} / {key}"
         for r in runs
         for key in keys | gpu_keys
     }
@@ -83,12 +83,18 @@ def make_sections(keys, runs, gpu_keys):
     sections = [section("01 任务效果 / Loss", [
         raw, smooth, wr.ScalarChart(title="最新动作损失 / Latest loss", metric=LOSS)
     ], pinned=True)]
+    for key, title in [
+        ("validation/action_flow_loss", "未参与本次训练的验证轨迹 / Action flow loss"),
+        ("regression_seen_val/action_flow_loss", "旧权重已见轨迹回归 / Action flow loss"),
+    ]:
+        if key in keys:
+            sections[0].panels.append(line(title, [key], title_y="Flow matching loss"))
 
-    progress = line("训练进度：更新步 vs 已用时间（目标 20,000）", ["Step"], title_y="Optimizer step")
+    progress = line(f"训练进度：更新步 vs 已用时间（{target_label}）", ["Step"], title_y="Optimizer step")
     progress.x = "RelativeTime(Process)"
     progress.title_x = "Elapsed seconds"
     sections.append(section("02 训练进度 / Progress", [
-        wr.ScalarChart(title="当前更新步 / 20,000", metric="Step"),
+        wr.ScalarChart(title=f"当前更新步 / {target_label}", metric="Step"),
         progress,
         wr.ScalarChart(title="已运行时长 / Elapsed seconds", metric="RelativeTime(Process)"),
     ]))
@@ -122,7 +128,7 @@ def make_sections(keys, runs, gpu_keys):
         efficiency.append(gpu)
     sections.append(section("04 速度与资源 / Efficiency", efficiency))
     sections.append(ws.Section(name="05 实验说明 / Recipe", is_open=False, panels=[wr.MarkdownPanel(
-        markdown=(
+        markdown=recipe_text or (
             "337 条轨迹，382,422 帧。两组均为 8×A800、global batch 64、"
             "20,000 optimizer updates、seed 42，约 3.35 次数据遍历。"
             "同一官方初始化；RGB 3 路相机，MAE 另外使用 2 路触觉。\n\n"
@@ -149,11 +155,15 @@ def main():
     parser.add_argument("--project", required=True)
     parser.add_argument("--record-dir", type=Path, required=True)
     parser.add_argument("--update-personal", action="store_true", help="Also curate the API account's personal workspace")
+    parser.add_argument("--run-query", default="-fft20k-b64-s42-20261008")
+    parser.add_argument("--view-name", default=VIEW_NAME)
+    parser.add_argument("--target-label", default="20,000")
+    parser.add_argument("--recipe-text")
     args = parser.parse_args()
     args.record_dir.mkdir(parents=True, exist_ok=True)
     api = wandb.Api(timeout=45)
     runs = [r for r in api.runs(f"{args.entity}/{args.project}")
-            if "-fft20k-b64-s42-20261008" in r.name and not r.name.endswith("-smoke")]
+            if args.run_query in r.name and not r.name.endswith("-smoke")]
     if not runs:
         raise SystemExit("No formal comparison runs found")
     keys, gpu_keys, evidence = set(), set(), []
@@ -179,18 +189,18 @@ def main():
     nodes = [e["node"] for e in response["project"]["allViews"]["edges"]]
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     (args.record_dir / f"workspaces_before_{stamp}.json").write_text(json.dumps(response, indent=2))
-    node = next((n for n in nodes if n["displayName"] == VIEW_NAME), None)
+    node = next((n for n in nodes if n["displayName"] == args.view_name), None)
     workspace = load_view(node, args.entity, args.project) if node else ws.Workspace(
-        entity=args.entity, project=args.project, name=VIEW_NAME, auto_generate_panels=False
+        entity=args.entity, project=args.project, name=args.view_name, auto_generate_panels=False
     )
-    workspace.sections = make_sections(keys, runs, gpu_keys)
+    workspace.sections = make_sections(keys, runs, gpu_keys, target_label=args.target_label, recipe_text=args.recipe_text)
     # The SDK exposes this as a read-only creation option. Its wire model also
     # supports persisted updates; set the stored flag and verify after saving.
     workspace._auto_generate_panels = False
     workspace.settings = ws.WorkspaceSettings(x_axis="Step", sort_panels_alphabetically=False, max_runs=2)
     workspace.runset_settings = ws.RunsetSettings(
-        query="-fft20k-b64-s42-20261008",
-        run_settings={r.id: ws.RunSettings(color="#E69F00" if "-mae-" in r.name else "#0072B2") for r in runs},
+        query=args.run_query,
+        run_settings={r.id: ws.RunSettings(color="#E69F00" if "-mae-" in r.name or "-warmstart" in r.name else "#0072B2") for r in runs},
         pinned_columns=["summary:train/action_flow_loss", "summary:_step", "run:state"],
     )
     workspace.save()

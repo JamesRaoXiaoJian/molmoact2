@@ -940,6 +940,7 @@ class _FeatureNormalizer:
         self.q_high = q_high
         self.mask = mask
         self.zero_mask = zero_mask
+        self.clip = True
 
     @classmethod
     def from_stats(
@@ -1031,7 +1032,7 @@ class _FeatureNormalizer:
             )
         else:
             normed = arr
-        if self.mode in {"min_max", "q01_q99", "q10_q90"}:
+        if self.clip and self.mode in {"min_max", "q01_q99", "q10_q90"}:
             normed = np.clip(normed, -1.0, 1.0)
         if self.mask is not None:
             normed = np.where(self.mask, normed, arr)
@@ -1045,7 +1046,8 @@ class _FeatureNormalizer:
         arr = _to_array(x)
         if arr is None:
             return None
-        if self.mode in {"min_max", "q01_q99", "q10_q90"}:
+        raw = arr
+        if self.clip and self.mode in {"min_max", "q01_q99", "q10_q90"}:
             arr = np.clip(arr, -1.0, 1.0)
         if self.mode == "none":
             out = arr
@@ -1058,10 +1060,30 @@ class _FeatureNormalizer:
         else:
             out = arr
         if self.mask is not None:
-            out = np.where(self.mask, out, arr)
+            out = np.where(self.mask, out, raw)
         if torch.is_tensor(x):
             return torch.as_tensor(out, device=x.device, dtype=x.dtype)
         return out
+
+
+def _normalization_options(metadata: Mapping[str, Any], feature: str, default_mode: str):
+    # Kept self-contained for exported Hugging Face remote-code checkpoints.
+    contract = metadata.get("normalization")
+    if contract is None:
+        return default_mode, True
+    if not isinstance(contract, Mapping) or set(contract) != {"version", "state", "action"}:
+        raise ValueError("normalization must define version, state and action")
+    if contract["version"] != 2:
+        raise ValueError(f"Unsupported normalization version {contract['version']!r}")
+    for name in ("state", "action"):
+        options = contract[name]
+        if not isinstance(options, Mapping) or set(options) != {"mode", "clip"}:
+            raise ValueError(f"normalization.{name} must define mode and clip")
+        if options["mode"] not in {"min_max", "q01_q99", "q10_q90", "mean_std", "none"}:
+            raise ValueError(f"Unsupported normalization mode {options['mode']!r}")
+        if not isinstance(options["clip"], bool):
+            raise ValueError(f"normalization.{name}.clip must be boolean")
+    return contract[feature]["mode"], contract[feature]["clip"]
 
 
 class _RobotStats:
@@ -1074,16 +1096,20 @@ class _RobotStats:
         self.action_normalizers = {}
         self.state_normalizers = {}
         for tag, metadata in self.metadata_by_tag.items():
+            action_mode, action_clip = _normalization_options(metadata, "action", self.norm_mode)
+            state_mode, state_clip = _normalization_options(metadata, "state", self.norm_mode)
             if metadata.get("action_stats") is not None:
                 self.action_normalizers[tag] = _FeatureNormalizer.from_stats(
                     metadata.get("action_stats"),
-                    self.norm_mode,
+                    action_mode,
                 )
+                self.action_normalizers[tag].clip = action_clip
             if metadata.get("state_stats") is not None:
                 self.state_normalizers[tag] = _FeatureNormalizer.from_stats(
                     metadata.get("state_stats"),
-                    self.norm_mode,
+                    state_mode,
                 )
+                self.state_normalizers[tag].clip = state_clip
 
     def validate_tag(self, norm_tag: Optional[str]) -> str:
         tag = str(norm_tag or "").strip()

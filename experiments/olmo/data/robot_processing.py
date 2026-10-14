@@ -180,6 +180,7 @@ class _FeatureNormalizer:
     mask: Optional[np.ndarray] = None
     zero_mask: Optional[np.ndarray] = None
     mode: str = "min_max"
+    clip: bool = True
 
     @classmethod
     def from_stats(
@@ -263,7 +264,7 @@ class _FeatureNormalizer:
             q_high=self.q_high,
             mode=self.mode,
         )
-        if _uses_bounded_normalized_range(self.mode):
+        if self.clip and _uses_bounded_normalized_range(self.mode):
             normed = np.clip(normed, -1.0, 1.0)
         if self.mask is not None:
             normed = np.where(self.mask, normed, arr)
@@ -278,7 +279,7 @@ class _FeatureNormalizer:
         if arr is None:
             return None
         raw = arr
-        if _uses_bounded_normalized_range(self.mode):
+        if self.clip and _uses_bounded_normalized_range(self.mode):
             arr = np.clip(arr, -1.0, 1.0)
         unnorm = _unnormalize_array(
             arr,
@@ -395,6 +396,26 @@ class RobotProcessor:
         return self._get_metadata_positive_int(repo_id, "n_action_steps")
 
 
+def normalization_options(metadata: Mapping[str, Any], feature: str, default_mode: str):
+    """Absent metadata preserves legacy checkpoints; v2 specifies both features."""
+    contract = metadata.get("normalization")
+    if contract is None:
+        return default_mode, True
+    if not isinstance(contract, Mapping) or set(contract) != {"version", "state", "action"}:
+        raise ValueError("normalization must define version, state and action")
+    if contract["version"] != 2:
+        raise ValueError(f"Unsupported normalization version {contract['version']!r}")
+    for name in ("state", "action"):
+        options = contract[name]
+        if not isinstance(options, Mapping) or set(options) != {"mode", "clip"}:
+            raise ValueError(f"normalization.{name} must define mode and clip")
+        if options["mode"] not in {"min_max", "q01_q99", "q10_q90", "mean_std", "none"}:
+            raise ValueError(f"Unsupported normalization mode {options['mode']!r}")
+        if not isinstance(options["clip"], bool):
+            raise ValueError(f"normalization.{name}.clip must be boolean")
+    return contract[feature]["mode"], contract[feature]["clip"]
+
+
 @dataclass
 class RobotProcessorConfig(BaseConfig):
     """Configuration container for robot normalization processing."""
@@ -492,19 +513,23 @@ class RobotProcessorConfig(BaseConfig):
         for tag, metadata in self.metadata_by_tag.items():
             action_stats = metadata.get("action_stats")
             state_stats = metadata.get("state_stats")
+            action_mode, action_clip = normalization_options(metadata, "action", self.norm_mode)
+            state_mode, state_clip = normalization_options(metadata, "state", self.norm_mode)
             if action_stats is not None:
                 try:
-                    norm = _FeatureNormalizer.from_stats(action_stats, mode=self.norm_mode)
+                    norm = _FeatureNormalizer.from_stats(action_stats, mode=action_mode)
                 except ValueError as exc:
                     raise ValueError(f"Invalid action_stats for tag {tag!r}: {exc}") from exc
                 if norm is not None:
+                    norm.clip = action_clip
                     action_norms[tag] = norm
             if state_stats is not None:
                 try:
-                    norm = _FeatureNormalizer.from_stats(state_stats, mode=self.norm_mode)
+                    norm = _FeatureNormalizer.from_stats(state_stats, mode=state_mode)
                 except ValueError as exc:
                     raise ValueError(f"Invalid state_stats for tag {tag!r}: {exc}") from exc
                 if norm is not None:
+                    norm.clip = state_clip
                     state_norms[tag] = norm
         return action_norms, state_norms
 
